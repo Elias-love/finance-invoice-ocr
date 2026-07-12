@@ -1,21 +1,22 @@
-"""模拟发票台账生成器：生成虚构"星辰集团"体系的增值税发票记录到 invoice_records_simple.json
+"""模拟发票台账生成器：生成虚构"星辰集团"体系的增值税发票记录，写入 SQLite。
 
 用法：
     python scripts/generate_mock_invoices.py
 
 数据特点：
 - 全部虚构，与任何真实企业无关；税号、银行账号、金额均为编造
-- 结构完全匹配百度云 VAT OCR 返回字段，可直接被主程序的台账/导出功能读取
+- 结构匹配百度云 VAT OCR 字段，可直接被台账/导出功能读取
 - 确定性生成（无随机数），便于演示复现
 """
 
-import json
-from pathlib import Path
+import sys
 from datetime import datetime, timedelta
+from pathlib import Path
 
-OUT = Path(__file__).parent.parent / "invoice_records_simple.json"
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# 虚构"星辰集团"主体（购方，与 finance-rag 项目共用同一套虚构体系）+ 虚构外部供应商（销方）
+from invoice import storage  # noqa: E402
+
 BUYERS = [
     ("深圳星辰数字科技集团股份有限公司", "91440300MA5F1CT001X"),
     ("深圳市辰拓智能设备有限公司",       "91440300MA5F1CT002Y"),
@@ -38,75 +39,54 @@ COMMODITIES = [
 ]
 
 
-def money(x):
-    return round(x, 2)
-
-
-def build_record(rec_id, buyer, seller, commodity, qty, date_str):
+def build_data(buyer, seller, commodity, qty, date_str, inv_num) -> dict:
     b_name, b_tax = buyer
     s_name, s_tax, s_bank, s_acct = seller
     c_name, c_type, c_unit, c_rate_str, c_price = commodity
     rate = float(c_rate_str.strip("%")) / 100
-
-    amount = money(c_price * qty)          # 不含税金额
-    tax = money(amount * rate)             # 税额
-    total_with_tax = money(amount + tax)   # 价税合计
-
-    inv_num = f"244420000{rec_id:011d}"[:20]
+    amount = round(c_price * qty, 2)
+    tax = round(amount * rate, 2)
+    total = round(amount + tax, 2)
     return {
-        "id": rec_id,
-        "time": date_str + " 09:%02d:00" % (rec_id % 60),
-        "user": "演示用户",
-        "data": {
-            "InvoiceType": "电子发票(专用发票)",
-            "InvoiceTypeOrg": "电子发票(增值税专用发票)",
-            "InvoiceNum": inv_num,
-            "InvoiceNumConfirm": inv_num,
-            "InvoiceDate": date_str.replace("-", "年", 1).replace("-", "月", 1) + "日",
-            "PurchaserName": b_name,
-            "PurchaserRegisterNum": b_tax,
-            "PurchaserAddress": "",
-            "PurchaserBank": "",
-            "SellerName": s_name,
-            "SellerRegisterNum": s_tax,
-            "SellerAddress": "",
-            "SellerBank": "",
-            "CommodityName": [{"row": "1", "word": c_name}],
-            "CommodityType": [{"row": "1", "word": c_type}],
-            "CommodityUnit": [{"row": "1", "word": c_unit}],
-            "CommodityNum": [{"row": "1", "word": str(qty)}],
-            "CommodityPrice": [{"row": "1", "word": str(c_price)}],
-            "CommodityAmount": [{"row": "1", "word": str(amount)}],
-            "CommodityTaxRate": [{"row": "1", "word": c_rate_str}],
-            "CommodityTax": [{"row": "1", "word": str(tax)}],
-            "TotalAmount": str(amount),
-            "TotalTax": str(tax),
-            "AmountInFiguers": str(total_with_tax),
-            "AmountInWords": "（金额大写略）",
-            "ServiceType": "其他",
-            "Remarks": f"销方开户银行:{s_bank};银行账号:{s_acct}",
-            "Agent": "否",
-            "InvoiceTag": "其他",
-        },
+        "InvoiceType": "电子发票(专用发票)",
+        "InvoiceTypeOrg": "电子发票(增值税专用发票)",
+        "InvoiceNum": inv_num,
+        "InvoiceNumConfirm": inv_num,
+        "InvoiceDate": date_str.replace("-", "年", 1).replace("-", "月", 1) + "日",
+        "PurchaserName": b_name,
+        "PurchaserRegisterNum": b_tax,
+        "SellerName": s_name,
+        "SellerRegisterNum": s_tax,
+        "CommodityName": [{"row": "1", "word": c_name}],
+        "CommodityType": [{"row": "1", "word": c_type}],
+        "CommodityUnit": [{"row": "1", "word": c_unit}],
+        "CommodityNum": [{"row": "1", "word": str(qty)}],
+        "CommodityPrice": [{"row": "1", "word": str(c_price)}],
+        "CommodityAmount": [{"row": "1", "word": str(amount)}],
+        "CommodityTaxRate": [{"row": "1", "word": c_rate_str}],
+        "CommodityTax": [{"row": "1", "word": str(tax)}],
+        "TotalAmount": str(amount),
+        "TotalTax": str(tax),
+        "AmountInFiguers": str(total),
+        "ServiceType": "其他",
+        "Remarks": f"销方开户银行:{s_bank};银行账号:{s_acct}",
     }
 
 
 def main():
-    records = []
+    storage.init_db()
+    storage.clear()  # 重新生成前清空，保证确定性
     base = datetime(2026, 3, 1)
-    rec_id = 1
-    for i in range(24):  # 生成 24 条演示记录
-        buyer = BUYERS[i % len(BUYERS)]
-        seller = SELLERS[i % len(SELLERS)]
-        commodity = COMMODITIES[i % len(COMMODITIES)]
-        qty = 10 + (i * 7) % 90
+    total = 0.0
+    for i in range(24):
         date_str = (base + timedelta(days=i * 2)).strftime("%Y-%m-%d")
-        records.append(build_record(rec_id, buyer, seller, commodity, qty, date_str))
-        rec_id += 1
-
-    OUT.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
-    total = sum(float(r["data"]["AmountInFiguers"]) for r in records)
-    print(f"已生成 {len(records)} 条虚构发票记录 → {OUT.name}")
+        inv_num = f"244420000{i + 1:011d}"[:20]
+        data = build_data(BUYERS[i % 4], SELLERS[i % 4], COMMODITIES[i % 6],
+                          10 + (i * 7) % 90, date_str, inv_num)
+        storage.add_record(data, user="演示用户")
+        total += float(data["AmountInFiguers"])
+    import config
+    print(f"已生成 {storage.count()} 条虚构发票记录 → {config.DB_PATH.name}")
     print(f"价税合计总额（虚构）：{total:,.2f} 元")
 
 

@@ -1,0 +1,59 @@
+"""SQLite 台账存储测试。"""
+
+import pytest
+
+import config
+from invoice import storage
+
+
+@pytest.fixture
+def temp_db(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "test.db")
+    storage.init_db()
+    yield
+
+
+SAMPLE = {
+    "InvoiceNum": "24442000000000000001",
+    "InvoiceDate": "2026年03月01日",
+    "PurchaserName": "深圳星辰数字科技集团股份有限公司",
+    "SellerName": "珠海东晟新材料科技有限公司",
+    "TotalAmount": "1000.00",
+    "TotalTax": "130.00",
+}
+
+
+def test_add_and_count(temp_db):
+    assert storage.count() == 0
+    rid = storage.add_record(SAMPLE, user="tester")
+    assert rid == 1
+    assert storage.count() == 1
+
+
+def test_get_all_roundtrip(temp_db):
+    storage.add_record(SAMPLE)
+    records = storage.get_all()
+    assert len(records) == 1
+    r = records[0]
+    assert r["invoice_num"] == SAMPLE["InvoiceNum"]
+    assert r["data"]["SellerName"] == SAMPLE["SellerName"]  # 原始 JSON 完整保留
+
+
+def test_newest_first_order(temp_db):
+    storage.add_record({**SAMPLE, "InvoiceNum": "A"})
+    storage.add_record({**SAMPLE, "InvoiceNum": "B"})
+    ids = [r["id"] for r in storage.get_all(newest_first=True)]
+    assert ids == [2, 1]
+
+
+def test_count_on_date(temp_db):
+    storage.add_record(SAMPLE)
+    # created_at 用当天时间，count_on 未来日期应为 0
+    assert storage.count_on("1999-01-01") == 0
+
+
+def test_clear(temp_db):
+    storage.add_record(SAMPLE)
+    storage.clear()
+    assert storage.count() == 0
+    assert storage.get_all() == []

@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>管理后台</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto; background: #f0f4f8; margin: 0; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header { background: linear-gradient(135deg, #0f52ba 0%, #1e88e5 100%); color: white; padding: 24px; border-radius: 12px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px; }
+        .header h1 { margin: 0; font-size: 24px; }
+        .header-actions { display: flex; gap: 12px; flex-wrap: wrap; }
+        .btn { padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; text-decoration: none; display: inline-block; }
+        .btn-primary { background: white; color: #0f52ba; }
+        .btn-danger { background: #ef4444; color: white; }
+        .btn-danger:hover { background: #dc2626; }
+        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 20px; }
+        .stat-card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+        .stat-card h3 { margin: 0 0 8px 0; color: #64748b; font-size: 14px; }
+        .stat-card .value { font-size: 32px; font-weight: 700; color: #1e293b; }
+        .table-card { background: white; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); overflow: hidden; }
+        .table-header { padding: 16px; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
+        .table-header h2 { margin: 0; font-size: 18px; }
+        .table-container { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 12px 16px; text-align: left; border-bottom: 1px solid #e2e8f0; }
+        th { background: #f8fafc; font-weight: 600; color: #374151; }
+        tr:hover { background: #f8fafc; }
+        .empty { text-align: center; padding: 40px; color: #64748b; }
+        @media (max-width: 640px) {
+            body { padding: 10px; }
+            .header { padding: 16px; }
+            .header h1 { font-size: 18px; }
+            th, td { padding: 8px 12px; font-size: 12px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📊 管理后台</h1>
+            <div class="header-actions">
+                <a href="/" class="btn btn-primary">← 返回首页</a>
+                <a href="/admin/logout" class="btn btn-primary">退出登录</a>
+            </div>
+        </div>
+
+        <div class="stats">
+            <div class="stat-card">
+                <h3>总识别次数</h3>
+                <div class="value">{{ total_count }}</div>
+            </div>
+            <div class="stat-card">
+                <h3>今日识别</h3>
+                <div class="value">{{ today_count }}</div>
+            </div>
+        </div>
+
+        <div class="table-card">
+            <div class="table-header">
+                <h2>识别历史记录</h2>
+                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                    <a href="/admin/export/history" class="btn btn-primary">📊 导出Excel</a>
+                    <form method="post" action="/admin/clear" onsubmit="return confirm('确定要清空所有历史记录吗？此操作不可恢复！');">
+                        <button type="submit" class="btn btn-danger">🗑️ 清空所有记录</button>
+                    </form>
+                </div>
+            </div>
+            <div class="table-container">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th><th>时间</th><th>发票号码</th>
+                            <th>购买方</th><th>销售方</th><th>金额</th><th>税额</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for r in records %}
+                        {% set d = r.data %}
+                        <tr>
+                            <td>{{ r.id }}</td>
+                            <td>{{ r.created_at }}</td>
+                            <td>{{ d.InvoiceNum or d.InvoiceNo or '-' }}</td>
+                            <td>{{ d.PurchaserName or '-' }}</td>
+                            <td>{{ d.SellerName or '-' }}</td>
+                            <td>{{ d.TotalAmount or '-' }}</td>
+                            <td>{{ d.TotalTax or '-' }}</td>
+                        </tr>
+                        {% else %}
+                        <tr><td colspan="7" class="empty">暂无历史记录</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

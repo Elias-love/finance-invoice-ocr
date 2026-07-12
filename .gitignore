@@ -16,3 +16,6 @@ venv/
 .DS_Store
 .idea/
 .vscode/
+
+# SQLite 台账数据（由生成器创建）
+data/

@@ -71,7 +71,7 @@
                 <table>
                     <thead>
                         <tr>
-                            <th>ID</th><th>时间</th><th>发票号码</th>
+                            <th>ID</th><th>时间</th><th>控制状态</th><th>发票号码</th>
                             <th>购买方</th><th>销售方</th><th>金额</th><th>税额</th>
                         </tr>
                     </thead>
@@ -81,6 +81,7 @@
                         <tr>
                             <td>{{ r.id }}</td>
                             <td>{{ r.created_at }}</td>
+                            <td>{{ r.validation.message or '待复核' }}</td>
                             <td>{{ d.InvoiceNum or d.InvoiceNo or '-' }}</td>
                             <td>{{ d.PurchaserName or '-' }}</td>
                             <td>{{ d.SellerName or '-' }}</td>
@@ -88,7 +89,7 @@
                             <td>{{ d.TotalTax or '-' }}</td>
                         </tr>
                         {% else %}
-                        <tr><td colspan="7" class="empty">暂无历史记录</td></tr>
+                        <tr><td colspan="8" class="empty">暂无历史记录</td></tr>
                         {% endfor %}
                     </tbody>
                 </table>

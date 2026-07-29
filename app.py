@@ -6,7 +6,11 @@
   POST /api/export/csv     <- {"data": [...]}
 """
 
+import hashlib
+import hmac
 import logging
+import time
+from collections import defaultdict, deque
 from datetime import datetime
 from functools import wraps
 from io import BytesIO
@@ -18,6 +22,8 @@ from flask import (Flask, Response, jsonify, redirect, render_template,
 
 import config
 from invoice import ocr, storage
+from invoice.extract import field
+from invoice.validate import validate_invoice
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,6 +36,11 @@ def create_app() -> Flask:
     app = Flask(__name__)
     app.secret_key = config.FLASK_SECRET_KEY
     app.config["MAX_CONTENT_LENGTH"] = config.MAX_CONTENT_LENGTH
+    app.config.update(
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE="Lax",
+        SESSION_COOKIE_SECURE=config.SESSION_COOKIE_SECURE,
+    )
     storage.init_db()
     _register_routes(app)
     return app
@@ -44,8 +55,51 @@ def _admin_required(f):
     return wrapper
 
 
+def _api_admin_required(f):
+    @wraps(f)
+    def wrapper(*args, **kwargs):
+        if not session.get("is_admin"):
+            return jsonify({"items": [], "error": "请先登录后再操作"}), 401
+        return f(*args, **kwargs)
+    return wrapper
+
+
+_ocr_calls = defaultdict(deque)
+
+
+def _rate_limit_ok(client_key: str) -> bool:
+    now = time.time()
+    calls = _ocr_calls[client_key]
+    while calls and calls[0] < now - 60:
+        calls.popleft()
+    if len(calls) >= config.OCR_RATE_LIMIT_PER_MINUTE:
+        return False
+    calls.append(now)
+    return True
+
+
+def _looks_like_allowed_file(content: bytes, ext: str) -> bool:
+    signatures = {
+        ".pdf": (b"%PDF",),
+        ".png": (b"\x89PNG\r\n\x1a\n",),
+        ".jpg": (b"\xff\xd8\xff",),
+        ".jpeg": (b"\xff\xd8\xff",),
+        ".bmp": (b"BM",),
+    }
+    return any(content.startswith(sig) for sig in signatures.get(ext, ()))
+
+
+def _safe_export_cell(value: str) -> str:
+    """阻止 CSV/Excel 打开时把 OCR 文本当作公式执行。"""
+    value = str(value)
+    if value.lstrip().startswith(("=", "+", "-", "@")):
+        return "'" + value
+    return value
+
+
 def _rows_to_excel(rows: list[list[str]], sheet: str, cn_filename: str) -> Response:
-    df = pd.DataFrame(rows, columns=config.EXPORT_FIELD_NAMES)
+    safe_rows = [[_safe_export_cell(cell) for cell in row] for row in rows]
+    df = pd.DataFrame(safe_rows, columns=config.EXPORT_FIELD_NAMES)
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name=sheet)
@@ -61,14 +115,20 @@ def _rows_to_excel(rows: list[list[str]], sheet: str, cn_filename: str) -> Respo
 def _register_routes(app: Flask):
 
     @app.route("/")
+    @_admin_required
     def index():
         return render_template("index.html")
 
     @app.route("/admin", methods=["GET", "POST"])
     def admin_login():
         if request.method == "POST":
-            if (request.form.get("username") == config.ADMIN_USERNAME
-                    and request.form.get("password") == config.ADMIN_PASSWORD):
+            valid_user = hmac.compare_digest(
+                request.form.get("username", ""), config.ADMIN_USERNAME
+            )
+            valid_password = bool(config.ADMIN_PASSWORD) and hmac.compare_digest(
+                request.form.get("password", ""), config.ADMIN_PASSWORD
+            )
+            if valid_user and valid_password:
                 session["is_admin"] = True
                 return redirect(url_for("admin_dashboard"))
             return render_template("admin_login.html", error="用户名或密码错误")
@@ -106,7 +166,11 @@ def _register_routes(app: Flask):
         return _rows_to_excel(rows, "发票历史记录", "发票历史记录.xlsx")
 
     @app.route("/api/recognize", methods=["POST"])
+    @_api_admin_required
     def recognize():
+        client_key = request.remote_addr or "unknown"
+        if not _rate_limit_ok(client_key):
+            return jsonify({"items": [], "error": "OCR 调用过于频繁，请稍后再试"}), 429
         if "file" not in request.files:
             return jsonify({"items": [], "error": "未收到上传文件"}), 400
         file = request.files["file"]
@@ -118,10 +182,31 @@ def _register_routes(app: Flask):
         if ext not in config.ALLOWED_EXTENSIONS:
             return jsonify({"items": [], "error": f"不支持的文件类型：{ext}"}), 400
 
+        content = file.read()
+        if not _looks_like_allowed_file(content, ext):
+            return jsonify({"items": [], "error": "文件内容与扩展名不匹配"}), 400
+
         try:
-            results = ocr.recognize_bytes(file.read(), file.filename)
+            source_sha256 = hashlib.sha256(content).hexdigest()
+            results = ocr.recognize_bytes(content, file.filename)
             for invoice_data in results:
-                storage.add_record(invoice_data, user="系统")
+                control = validate_invoice(invoice_data)
+                invoice_num = field(invoice_data, "InvoiceNum").strip()
+                duplicate = storage.invoice_exists(invoice_num)
+                if duplicate:
+                    control = {
+                        **control,
+                        "status": "duplicate",
+                        "message": "重复发票：历史台账已存在相同发票号码",
+                    }
+                invoice_data["_control"] = control
+                if not duplicate:
+                    storage.add_record(
+                        invoice_data,
+                        user=config.ADMIN_USERNAME,
+                        source_sha256=source_sha256,
+                        validation=control,
+                    )
             # 识别成功但未提取到发票时，明确告知而非静默返回空
             error = None if results else "未识别到发票内容，请确认上传的是清晰的增值税发票"
             return jsonify({"items": results, "error": error})
@@ -133,17 +218,19 @@ def _register_routes(app: Flask):
             return jsonify({"items": [], "error": f"识别异常：{e}"}), 500
 
     @app.route("/api/export/excel", methods=["POST"])
+    @_api_admin_required
     def export_excel():
         data = (request.get_json(silent=True) or {}).get("data", [])
         rows = [[__ef(item, k) for k in config.EXPORT_FIELDS] for item in data]
         return _rows_to_excel(rows, "发票汇总", "发票汇总.xlsx")
 
     @app.route("/api/export/csv", methods=["POST"])
+    @_api_admin_required
     def export_csv():
         data = (request.get_json(silent=True) or {}).get("data", [])
         lines = [",".join(config.EXPORT_FIELD_NAMES)]
         for item in data:
-            lines.append(",".join(__ef(item, k).replace(",", "，")
+            lines.append(",".join(_safe_export_cell(__ef(item, k)).replace(",", "，")
                                   for k in config.EXPORT_FIELDS))
         return Response(
             "\n".join(lines),
@@ -172,5 +259,7 @@ if __name__ == "__main__":
     print(f"管理员入口: http://127.0.0.1:{config.PORT}/admin  (账号 {config.ADMIN_USERNAME})")
     if not config.BAIDU_OCR_API_KEY or not config.BAIDU_OCR_SECRET_KEY:
         print("⚠️  未配置百度 OCR 凭证：识别功能不可用，但可浏览演示台账")
+    if not config.ADMIN_PASSWORD:
+        print("⚠️  未配置 ADMIN_PASSWORD：系统保持锁定，请先在 .env 设置强密码")
     print("=" * 50)
     app.run(host="0.0.0.0", port=config.PORT, debug=False)

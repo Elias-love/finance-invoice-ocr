@@ -16,11 +16,13 @@ BAIDU_OCR_SECRET_KEY = os.getenv("BAIDU_OCR_SECRET_KEY", "")
 
 # —— 管理员账号 ——
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "change-me-please")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 
 # —— Flask ——
 FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "") or os.urandom(24).hex()
 PORT = int(os.getenv("PORT", "5007"))
+SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "0") == "1"
+OCR_RATE_LIMIT_PER_MINUTE = int(os.getenv("OCR_RATE_LIMIT_PER_MINUTE", "10"))
 
 # 上传大小上限（字节）：默认 16MB，超出返回 413
 MAX_CONTENT_LENGTH = int(os.getenv("MAX_UPLOAD_MB", "16")) * 1024 * 1024

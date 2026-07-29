@@ -23,6 +23,9 @@ CREATE TABLE IF NOT EXISTS invoices (
     seller_name   TEXT,
     total_amount  TEXT,
     total_tax     TEXT,
+    source_sha256 TEXT,
+    validation_status TEXT NOT NULL DEFAULT 'review',
+    validation_json TEXT NOT NULL DEFAULT '{}',
     raw_json      TEXT NOT NULL
 );
 """
@@ -43,20 +46,39 @@ def _connect():
 def init_db():
     with _connect() as conn:
         conn.executescript(_SCHEMA)
+        existing = {r[1] for r in conn.execute("PRAGMA table_info(invoices)")}
+        migrations = {
+            "source_sha256": "ALTER TABLE invoices ADD COLUMN source_sha256 TEXT",
+            "validation_status": (
+                "ALTER TABLE invoices ADD COLUMN validation_status "
+                "TEXT NOT NULL DEFAULT 'review'"
+            ),
+            "validation_json": (
+                "ALTER TABLE invoices ADD COLUMN validation_json "
+                "TEXT NOT NULL DEFAULT '{}'"
+            ),
+        }
+        for column, sql in migrations.items():
+            if column not in existing:
+                conn.execute(sql)
 
 
-def add_record(invoice_data: dict, user: str = "匿名") -> int:
+def add_record(invoice_data: dict, user: str = "匿名",
+               source_sha256: str = "", validation: dict | None = None) -> int:
     """写入一条发票记录，返回自增 id。"""
     d = display_fields(invoice_data)
     with _connect() as conn:
         cur = conn.execute(
             """INSERT INTO invoices
                (created_at, user, invoice_num, invoice_date,
-                purchaser_name, seller_name, total_amount, total_tax, raw_json)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
+                purchaser_name, seller_name, total_amount, total_tax,
+                source_sha256, validation_status, validation_json, raw_json)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user,
              d["invoice_num"], d["invoice_date"], d["purchaser_name"],
              d["seller_name"], d["total_amount"], d["total_tax"],
+             source_sha256, (validation or {}).get("status", "review"),
+             json.dumps(validation or {}, ensure_ascii=False),
              json.dumps(invoice_data, ensure_ascii=False)),
         )
         return cur.lastrowid
@@ -71,6 +93,7 @@ def get_all(newest_first: bool = True) -> list[dict]:
     for r in rows:
         rec = dict(r)
         rec["data"] = json.loads(rec.pop("raw_json"))
+        rec["validation"] = json.loads(rec.pop("validation_json") or "{}")
         result.append(rec)
     return result
 
@@ -85,6 +108,17 @@ def count_on(date_str: str) -> int:
         return conn.execute(
             "SELECT COUNT(*) FROM invoices WHERE created_at LIKE ?",
             (date_str + "%",)).fetchone()[0]
+
+
+def invoice_exists(invoice_num: str) -> bool:
+    """按发票号码检查历史台账重复；空号码不参与查重。"""
+    if not invoice_num:
+        return False
+    with _connect() as conn:
+        return bool(conn.execute(
+            "SELECT 1 FROM invoices WHERE invoice_num = ? LIMIT 1",
+            (invoice_num,),
+        ).fetchone())
 
 
 def clear():

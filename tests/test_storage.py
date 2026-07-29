@@ -39,6 +39,26 @@ def test_get_all_roundtrip(temp_db):
     assert r["data"]["SellerName"] == SAMPLE["SellerName"]  # 原始 JSON 完整保留
 
 
+def test_audit_metadata_roundtrip(temp_db):
+    validation = {"status": "pass", "message": "基础校验通过"}
+    storage.add_record(
+        SAMPLE,
+        user="auditor",
+        source_sha256="abc123",
+        validation=validation,
+    )
+    record = storage.get_all()[0]
+    assert record["source_sha256"] == "abc123"
+    assert record["validation_status"] == "pass"
+    assert record["validation"]["message"] == "基础校验通过"
+
+
+def test_invoice_exists(temp_db):
+    assert storage.invoice_exists(SAMPLE["InvoiceNum"]) is False
+    storage.add_record(SAMPLE)
+    assert storage.invoice_exists(SAMPLE["InvoiceNum"]) is True
+
+
 def test_newest_first_order(temp_db):
     storage.add_record({**SAMPLE, "InvoiceNum": "A"})
     storage.add_record({**SAMPLE, "InvoiceNum": "B"})

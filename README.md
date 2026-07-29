@@ -16,7 +16,8 @@
 | 发票识别 | 上传增值税发票 PDF / 图片，调用百度云 VAT OCR 提取字段 |
 | PDF 解析 | PyMuPDF 将 PDF 逐页转图片后识别，支持多页 |
 | 字段提取 | 发票号码、日期、购销方名称/税号、金额、税额、税率、商品明细等 |
-| 台账录入 | 识别结果写入 SQLite 台账，记录操作人与时间 |
+| 入账控制 | 必填字段、发票号码格式、价税勾稽、税号格式与历史重复检查 |
+| 台账录入 | 非重复结果写入 SQLite，记录操作人、文件 SHA-256、控制结论与原始 OCR JSON |
 | 后台管理 | 管理员登录后查看/清空台账、导出全量历史 |
 | 数据导出 | 台账一键导出 Excel / CSV |
 
@@ -29,7 +30,9 @@
       ▼
 invoice/ocr.py ──► 百度 VAT OCR（带过期的 token 缓存 + 明确错误处理）
       ▼
-invoice/extract.py（字段抽取） ──► invoice/storage.py（SQLite 台账，线程安全）
+invoice/extract.py（字段抽取） ──► invoice/validate.py（确定性控制 + 重复检查）
+      ▼
+invoice/storage.py（SQLite 台账 + 原文件哈希 + 控制轨迹）
       ▼
 templates/（Jinja 自动转义） ──► 前台展示 / 后台管理 / Excel·CSV 导出
 ```
@@ -42,7 +45,8 @@ templates/（Jinja 自动转义） ──► 前台展示 / 后台管理 / Excel
 ├── invoice/
 │   ├── ocr.py                # 百度 OCR 封装：token 缓存/过期、错误处理、PDF/图片识别
 │   ├── storage.py            # SQLite 台账：线程安全，替代原 JSON 文件
-│   └── extract.py            # OCR 字段抽取
+│   ├── extract.py            # OCR 字段抽取
+│   └── validate.py           # 必填/格式/价税勾稽控制（不冒充税局真伪查验）
 ├── templates/                # Jinja 模板（HTML 与 Python 解耦，自动转义防 XSS）
 ├── scripts/generate_mock_invoices.py   # 虚构发票数据生成器
 └── tests/                    # 单元测试（pytest）
@@ -57,8 +61,8 @@ python scripts/generate_mock_invoices.py      # 生成虚构"星辰集团"发票
 python app.py                                 # 打开 http://127.0.0.1:5007
 ```
 
-- 前台 `http://127.0.0.1:5007` 无需登录即可上传识别
-- 后台 `http://127.0.0.1:5007/admin` 用 `.env` 中的管理员账号登录，管理台账与导出
+- 所有识别、导出和台账页面均须先通过 `/admin` 登录；`ADMIN_PASSWORD` 未设置时系统保持锁定
+- 单来源 IP 默认每分钟最多调用 OCR 10 次，可通过环境变量调整
 - 百度 OCR 密钥申请：https://cloud.baidu.com/product/ocr/invoice （不配置则识别不可用，但可浏览演示台账）
 
 ## 测试
@@ -83,15 +87,21 @@ gunicorn -w 4 -b 0.0.0.0:5007 app:app
 
 - **模块解耦**：OCR / 存储 / 抽取 / 路由 / 配置分离，HTML 移出 Python 进 Jinja 模板
 - **SQLite 台账**：替代原 JSON 文件，独立连接 + 文件级锁，支持并发写入不丢数据
-- **安全**：密钥全部环境变量化；Jinja 自动转义防 XSS；上传大小/类型校验；付费识别接口错误明确回传
+- **安全**：密钥全部环境变量化；识别/导出强制登录；付费 OCR 限流；文件扩展名与内容签名双校验；CSV/Excel 公式注入防护
 - **可靠**：百度 token 带过期缓存，长期运行不会因 token 过期而静默失败
+- **财务控制闭环**：取消任何随机“真伪有效”结论；后端只给出可复核的格式/勾稽/重复控制，并明确标注“非税局真伪查验”
 - **可测**：核心逻辑有单元测试与 CI
 
 ## 安全说明
 
 - 百度密钥、管理员密码、Flask 会话密钥**全部从环境变量读取**，源码零硬编码
 - `.env` 与 `data/`（SQLite 台账）均在 `.gitignore` 中，不会入库
+- 发票图片会发送到百度云 OCR。真实部署前必须完成数据分级、供应商合规评估和用户授权；需要数据不出域时应替换为私有 OCR
 - 演示数据为虚构；真实使用时台账即业务数据，请勿公开
+
+## 评估边界
+
+现有单元测试验证字段抽取、token 缓存、存储迁移、价税勾稽、重复检查和接口鉴权；它们不等于 OCR 准确率评估。生产试点前需建立人工标注发票集，分别统计发票号码、税号、金额、税额、日期的字段级完全匹配率，并记录单张延迟、成本和进入人工复核的比例。
 
 ## 说明
 

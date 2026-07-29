@@ -395,12 +395,11 @@
                             
                             const invoiceNum = item.InvoiceNum || item.InvoiceNo;
                             if (invoiceNum) {
-                                item._isDuplicate = processedInvoiceNums.has(invoiceNum);
+                                item._isDuplicate = processedInvoiceNums.has(invoiceNum)
+                                    || item._control?.status === 'duplicate';
                                 processedInvoiceNums.add(invoiceNum);
                             }
-                            
-                            item._verification = verifyInvoice(item);
-                            
+
                             currentResults.push(item);
                         });
                     }
@@ -416,14 +415,6 @@
             document.getElementById('exportCSVBtn').disabled = currentResults.length === 0;
         }
 
-        function verifyInvoice(item) {
-            const isValid = Math.random() > 0.1;
-            return {
-                success: isValid,
-                message: isValid ? '✅ 发票真实有效' : '❌ 发票查验失败，请核对'
-            };
-        }
-
         function renderResults() {
             const box = document.getElementById('resultBox');
             
@@ -435,14 +426,18 @@
             let html = '';
             currentResults.forEach((item, index) => {
                 const duplicateClass = item._isDuplicate ? 'duplicate' : '';
-                const verificationClass = item._verification.success ? 'success' : 'error';
+                const control = item._control || {
+                    status: 'review',
+                    message: '未取得后端校验结果，需要人工复核'
+                };
+                const verificationClass = control.status === 'pass' ? 'success' : 'error';
                 
                 html += `
                     <div class="result-item ${duplicateClass}" id="result-${index}">
                         <h4>第 ${index + 1} 张发票</h4>
                         ${item._isDuplicate ? '<div class="duplicate-warning">⚠️ 该发票已识别过</div>' : ''}
                         <div class="verification-status ${verificationClass}">
-                            ${item._verification.message}
+                            ${control.message}
                         </div>
                         <div class="row">
                             <div><span class="label">发票号码：</span><span class="value">${item.InvoiceNum || item.InvoiceNo || '-'}</span></div>
@@ -538,8 +533,6 @@
                             processedInvoiceNums = tempSet;
                         }
                     }
-                    
-                    newItem._verification = verifyInvoice(newItem);
                     
                     currentResults[index] = newItem;
                     renderResults();

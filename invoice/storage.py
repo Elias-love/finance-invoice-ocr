@@ -330,17 +330,6 @@ def count_on(date_str: str) -> int:
             (date_str + "%",)).fetchone()[0]
 
 
-def invoice_exists(invoice_num: str) -> bool:
-    """按发票号码检查历史台账重复；空号码不参与查重。"""
-    if not invoice_num:
-        return False
-    with _connect() as conn:
-        return bool(conn.execute(
-            "SELECT 1 FROM invoices WHERE invoice_num = ? LIMIT 1",
-            (invoice_num,),
-        ).fetchone())
-
-
 def clear():
     paths = []
     with _connect() as conn:

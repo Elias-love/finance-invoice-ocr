@@ -55,12 +55,6 @@ def test_audit_metadata_roundtrip(temp_db):
     assert record["validation"]["message"] == "基础校验通过"
 
 
-def test_invoice_exists(temp_db):
-    assert storage.invoice_exists(SAMPLE["InvoiceNum"]) is False
-    storage.add_record(SAMPLE)
-    assert storage.invoice_exists(SAMPLE["InvoiceNum"]) is True
-
-
 def test_newest_first_order(temp_db):
     storage.add_record({**SAMPLE, "InvoiceNum": "A"})
     storage.add_record({**SAMPLE, "InvoiceNum": "B"})

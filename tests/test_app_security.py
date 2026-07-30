@@ -111,6 +111,28 @@ def test_current_batch_survives_review_navigation(tmp_path, monkeypatch):
     assert "已恢复本批次" not in client.get("/").get_data(as_text=True)
 
 
+def test_empty_legacy_batch_session_recovers_latest_source(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "legacy-empty-batch.db")
+    storage.init_db()
+    rid = storage.add_record(
+        {"InvoiceNum": "LEGACY-BATCH"},
+        source_sha256="legacy-source",
+    )
+    client = invoice_app.app.test_client()
+    with client.session_transaction() as sess:
+        sess["is_admin"] = True
+        # 旧版本重复识别会留下空 ID 列表，但没有明确清除标记。
+        sess["current_batch_ids"] = []
+
+    home = client.get("/")
+    assert "LEGACY-BATCH" in home.get_data(as_text=True)
+    with client.session_transaction() as sess:
+        assert sess["current_batch_ids"] == [rid]
+        assert sess["current_batch_cleared"] is False
+
+
 def test_recognize_stores_record_in_current_batch(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "recognized-batch.db")
     monkeypatch.setattr(config, "REVIEW_SAMPLE_RATE", 0)
@@ -146,6 +168,104 @@ def test_recognize_stores_record_in_current_batch(tmp_path, monkeypatch):
     with client.session_transaction() as sess:
         assert sess["current_batch_ids"] == [record_id]
     assert "24442000000000000888" in client.get("/").get_data(as_text=True)
+
+
+def test_duplicate_check_ignores_history_but_flags_current_batch(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "batch-duplicate.db")
+    monkeypatch.setattr(config, "REVIEW_SAMPLE_RATE", 0)
+    storage.init_db()
+    invoice_data = {
+        "InvoiceNum": "24442000000000000777",
+        "InvoiceDate": "2026年07月30日",
+        "PurchaserName": "深圳星辰集团",
+        "PurchaserRegisterNum": "91440300MA5F1CT001",
+        "SellerName": "珠海东晟",
+        "SellerRegisterNum": "91440400MA5F1CT101",
+        "TotalAmount": "100.00",
+        "TotalTax": "13.00",
+        "AmountInFiguers": "113.00",
+    }
+    historical_id = storage.add_record(invoice_data, source_sha256="history")
+    monkeypatch.setattr(invoice_app.ocr, "estimate_units", lambda *_: 2)
+    monkeypatch.setattr(
+        invoice_app.ocr,
+        "recognize_bytes",
+        lambda *_: [dict(invoice_data), dict(invoice_data)],
+    )
+    client = invoice_app.app.test_client()
+    with client.session_transaction() as sess:
+        sess["is_admin"] = True
+
+    response = client.post(
+        "/api/recognize",
+        data={
+            "file": (BytesIO(b"\x89PNG\r\n\x1a\nfake"), "batch.png"),
+            "batch_action": "reset",
+        },
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 200
+    first, second = response.get_json()["items"]
+    assert first["_control"]["status"] != "duplicate"
+    assert first["_review"]["review_status"] == "auto_pass"
+    assert second["_control"]["status"] == "duplicate"
+    assert "本次识别批次" in second["_review"]["message"]
+    assert first["_record_id"] != second["_record_id"]
+    assert storage.count() == 3
+    with client.session_transaction() as sess:
+        assert sess["current_batch_ids"] == [
+            first["_record_id"],
+            second["_record_id"],
+        ]
+        assert historical_id not in sess["current_batch_ids"]
+
+
+def test_duplicate_check_spans_multiple_files_in_same_batch(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "multi-file-batch.db")
+    monkeypatch.setattr(config, "REVIEW_SAMPLE_RATE", 0)
+    storage.init_db()
+    invoice_data = {
+        "InvoiceNum": "24442000000000000666",
+        "InvoiceDate": "2026年07月30日",
+        "PurchaserName": "深圳星辰集团",
+        "PurchaserRegisterNum": "91440300MA5F1CT001",
+        "SellerName": "珠海东晟",
+        "SellerRegisterNum": "91440400MA5F1CT101",
+        "TotalAmount": "100.00",
+        "TotalTax": "13.00",
+        "AmountInFiguers": "113.00",
+    }
+    monkeypatch.setattr(invoice_app.ocr, "estimate_units", lambda *_: 1)
+    monkeypatch.setattr(
+        invoice_app.ocr,
+        "recognize_bytes",
+        lambda *_: [dict(invoice_data)],
+    )
+    client = invoice_app.app.test_client()
+    with client.session_transaction() as sess:
+        sess["is_admin"] = True
+
+    first = client.post(
+        "/api/recognize",
+        data={
+            "file": (BytesIO(b"\x89PNG\r\n\x1a\nfirst"), "first.png"),
+            "batch_action": "reset",
+        },
+        content_type="multipart/form-data",
+    ).get_json()["items"][0]
+    second = client.post(
+        "/api/recognize",
+        data={
+            "file": (BytesIO(b"\x89PNG\r\n\x1a\nsecond"), "second.png"),
+        },
+        content_type="multipart/form-data",
+    ).get_json()["items"][0]
+    assert first["_control"]["status"] != "duplicate"
+    assert second["_control"]["status"] == "duplicate"
 
 
 def test_pending_record_cannot_be_exported(tmp_path, monkeypatch):

@@ -171,14 +171,21 @@ def _record_for_batch(record: dict) -> dict:
 
 def _current_batch_records() -> list[dict]:
     """读取当前会话的识别批次，并清理已不存在的记录 ID。"""
-    if "current_batch_ids" not in session:
+    requested_ids = session.get("current_batch_ids", [])
+    if (
+        "current_batch_ids" not in session
+        or (
+            not requested_ids
+            and "current_batch_cleared" not in session
+        )
+    ):
         # 兼容升级前已经完成识别、但尚未写入会话批次 ID 的页面：
         # 按最近一次上传文件的 SHA-256 恢复其全部页，不再次调用 OCR。
         recovered = storage.get_latest_source_batch()
         session["current_batch_ids"] = [record["id"] for record in recovered]
+        session["current_batch_cleared"] = False
         return recovered
 
-    requested_ids = session.get("current_batch_ids", [])
     records = storage.get_by_ids(requested_ids)
     valid_ids = [record["id"] for record in records]
     if valid_ids != requested_ids:
@@ -363,6 +370,7 @@ def _register_routes(app: Flask):
     def recognize():
         if request.form.get("batch_action") == "reset":
             session["current_batch_ids"] = []
+            session["current_batch_cleared"] = True
 
         client_key = request.remote_addr or "unknown"
         if "file" not in request.files:
@@ -401,15 +409,27 @@ def _register_routes(app: Flask):
             source_path = (
                 storage.save_source(content, ext, source_sha256) if results else ""
             )
+            # 判重范围严格限定为当前点击“开始识别”建立的批次。
+            # 历史台账只用于留档，不参与本次重复判断。
+            current_batch = storage.get_by_ids(
+                session.get("current_batch_ids", [])
+            )
+            seen_invoice_nums = {
+                field(record["data"], "InvoiceNum").strip()
+                for record in current_batch
+                if field(record["data"], "InvoiceNum").strip()
+            }
             for invoice_data in results:
                 control = validate_invoice(invoice_data)
                 invoice_num = field(invoice_data, "InvoiceNum").strip()
-                duplicate = storage.invoice_exists(invoice_num)
+                duplicate = bool(
+                    invoice_num and invoice_num in seen_invoice_nums
+                )
                 if duplicate:
                     control = {
                         **control,
                         "status": "duplicate",
-                        "message": "重复发票：历史台账已存在相同发票号码",
+                        "message": "重复发票：本次识别批次存在相同发票号码",
                     }
                 review = assess_review(
                     invoice_data,
@@ -417,18 +437,17 @@ def _register_routes(app: Flask):
                     duplicate=duplicate,
                     source_sha256=source_sha256,
                 )
-                if duplicate:
-                    record_id = None
-                else:
-                    record_id = storage.add_record(
-                        invoice_data,
-                        user=config.ADMIN_USERNAME,
-                        source_sha256=source_sha256,
-                        validation=control,
-                        review=review,
-                        source_filename=file.filename,
-                        source_path=source_path,
-                    )
+                record_id = storage.add_record(
+                    invoice_data,
+                    user=config.ADMIN_USERNAME,
+                    source_sha256=source_sha256,
+                    validation=control,
+                    review=review,
+                    source_filename=file.filename,
+                    source_path=source_path,
+                )
+                if invoice_num:
+                    seen_invoice_nums.add(invoice_num)
                 # 以下字段只用于本次前端响应，不写入不可变的原始 OCR JSON。
                 invoice_data["_control"] = control
                 invoice_data["_review"] = review
@@ -441,6 +460,7 @@ def _register_routes(app: Flask):
                 session["current_batch_ids"] = list(dict.fromkeys(
                     [*current_ids, *new_record_ids]
                 ))[-200:]
+                session["current_batch_cleared"] = False
             # 识别成功但未提取到发票时，明确告知而非静默返回空
             error = None if results else "未识别到发票内容，请确认上传的是清晰的增值税发票"
             return jsonify({"items": results, "error": error})
@@ -472,6 +492,7 @@ def _register_routes(app: Flask):
         _verify_csrf()
         # 保留显式空列表，避免下一次加载又触发旧版本兼容恢复。
         session["current_batch_ids"] = []
+        session["current_batch_cleared"] = True
         return jsonify({"ok": True})
 
     @app.route("/api/export/excel", methods=["POST"])

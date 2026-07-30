@@ -1,7 +1,7 @@
 """发票机器预审与人工复核分流。
 
 百度标准 VAT OCR 接口没有统一的字段级 probability。本模块只根据可审计的
-确定性证据分级：字段完整性、格式、价税勾稽、辅助校验码、重复、大额阈值
+确定性证据分级：字段完整性、格式、价税勾稽、辅助校验码、批内重复、大额阈值
 和抽样质检。这里的 ``evidence_grade`` 不是模型置信度，更不是税局验真结果。
 """
 
@@ -107,7 +107,7 @@ def assess_review(
                 checks[key]["reason"] = "价税勾稽通过"
 
     if duplicate:
-        hard_reasons.append("历史台账存在相同发票号码")
+        hard_reasons.append("本次识别批次存在相同发票号码")
 
     for error in control.get("errors", []):
         if error not in hard_reasons:

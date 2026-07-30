@@ -44,6 +44,17 @@ def test_confirmation_mismatch_requires_review():
     assert "辅助校验" in review["field_checks"]["InvoiceNum"]["reason"]
 
 
+def test_current_batch_duplicate_requires_review():
+    review = assess_review(
+        VALID,
+        validate_invoice(VALID),
+        duplicate=True,
+    )
+    assert review["review_status"] == "pending"
+    assert review["risk_level"] == "high"
+    assert "本次识别批次存在相同发票号码" in review["reasons"]
+
+
 def test_high_value_invoice_requires_review(monkeypatch):
     monkeypatch.setattr(config, "HIGH_VALUE_REVIEW_AMOUNT", "100000")
     data = {

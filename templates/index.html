@@ -527,7 +527,7 @@
                 html += `
                     <div class="result-item ${duplicateClass}" id="result-${index}">
                         <h4>第 ${index + 1} 张发票</h4>
-                        ${item._isDuplicate ? '<div class="duplicate-warning">⚠️ 该发票已识别过</div>' : ''}
+                        ${item._isDuplicate ? '<div class="duplicate-warning">⚠️ 本次识别批次中存在相同发票号码</div>' : ''}
                         <div class="verification-status ${verificationClass}">
                             ${escapeHtml(review.message || control.message)}
                         </div>

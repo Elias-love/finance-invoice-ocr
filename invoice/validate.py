@@ -97,6 +97,10 @@ def _validate_line_tax(data: dict, tolerance: Decimal) -> list[str]:
     return warnings
 
 
+def _money_text(value: Decimal | None) -> str | None:
+    return format(value, ".2f") if value is not None else None
+
+
 CN_DIGITS = {
     "零": 0, "壹": 1, "贰": 2, "貳": 2, "叁": 3, "參": 3,
     "肆": 4, "伍": 5, "陆": 6, "陸": 6, "柒": 7, "捌": 8, "玖": 9,
@@ -184,13 +188,51 @@ def validate_invoice(data: dict) -> dict:
 
     line_amount = _sum_lines(data, "CommodityAmount")
     line_tax = _sum_lines(data, "CommodityTax")
+    line_amount_ok = (
+        None if line_amount is None or amount is None
+        else abs(line_amount - amount) <= tolerance
+    )
+    line_tax_ok = (
+        None if line_tax is None or tax is None
+        else abs(line_tax - tax) <= tolerance
+    )
+    detail_issues: list[str] = []
     if line_amount is not None and amount is not None:
-        if abs(line_amount - amount) > tolerance:
-            errors.append("明细行金额汇总与合计金额不一致")
+        if not line_amount_ok:
+            detail_issues.append(
+                "明细OCR提取可能不完整：金额汇总与票头合计不一致"
+            )
     if line_tax is not None and tax is not None:
-        if abs(line_tax - tax) > tolerance:
-            errors.append("明细行税额汇总与合计税额不一致")
-    errors.extend(_validate_line_tax(data, tolerance))
+        if not line_tax_ok:
+            detail_issues.append(
+                "明细OCR提取可能不完整：税额汇总与票头合计不一致"
+            )
+    detail_issues.extend(_validate_line_tax(data, tolerance))
+
+    detail_lists_present = any(
+        _line_values(data, key)
+        for key in ("CommodityName", "CommodityAmount", "CommodityTax")
+    )
+    if detail_issues:
+        detail_status = "incomplete"
+    elif detail_lists_present and line_amount_ok is True and line_tax_ok is True:
+        detail_status = "pass"
+    elif detail_lists_present:
+        detail_status = "partial"
+    else:
+        detail_status = "unavailable"
+    detail_rows = max(
+        (
+            len(_line_values(data, key))
+            for key in (
+                "CommodityName",
+                "CommodityAmount",
+                "CommodityTax",
+                "CommodityTaxRate",
+            )
+        ),
+        default=0,
+    )
 
     amount_words = field(data, "AmountInWords").strip()
     if amount_words and total is not None:
@@ -241,12 +283,10 @@ def validate_invoice(data: dict) -> dict:
                 and abs((amount + tax) - total) <= tolerance
             ),
             "line_amount_reconciliation": (
-                None if line_amount is None or amount is None
-                else abs(line_amount - amount) <= tolerance
+                line_amount_ok
             ),
             "line_tax_reconciliation": (
-                None if line_tax is None or tax is None
-                else abs(line_tax - tax) <= tolerance
+                line_tax_ok
             ),
             "uppercase_amount_reconciliation": (
                 None if not amount_words or total is None
@@ -255,11 +295,35 @@ def validate_invoice(data: dict) -> dict:
                     and abs(parse_chinese_amount(amount_words) - abs(total)) <= tolerance
                 )
             ),
+            "detail_reconciliation": {
+                "status": detail_status,
+                "extracted_rows": detail_rows,
+                "extracted_amount": _money_text(line_amount),
+                "header_amount": _money_text(amount),
+                "amount_difference": _money_text(
+                    amount - line_amount
+                    if amount is not None and line_amount is not None
+                    else None
+                ),
+                "extracted_tax": _money_text(line_tax),
+                "header_tax": _money_text(tax),
+                "tax_difference": _money_text(
+                    tax - line_tax
+                    if tax is not None and line_tax is not None
+                    else None
+                ),
+                "issues": detail_issues,
+            },
         },
+        "detail_issues": detail_issues,
         "message": (
             "基础校验通过（非税局真伪查验）"
-            if not errors
-            else "需要人工复核：" + "；".join(errors)
+            if not errors and not detail_issues
+            else (
+                "票头基础校验通过；明细OCR完整性需要复核"
+                if not errors
+                else "需要人工复核：" + "；".join(errors)
+            )
         ),
     }
 

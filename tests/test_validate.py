@@ -73,8 +73,13 @@ def test_line_sum_and_tax_rate_reconciliation():
         "CommodityTax": [{"row": "1", "word": "117.00"}],
         "CommodityTaxRate": [{"row": "1", "word": "13%"}],
     })
-    assert mismatch["status"] == "review"
-    assert any("明细行金额" in error for error in mismatch["errors"])
+    assert mismatch["status"] == "pass"
+    detail = mismatch["checks"]["detail_reconciliation"]
+    assert detail["status"] == "incomplete"
+    assert detail["extracted_rows"] == 1
+    assert detail["amount_difference"] == "100.00"
+    assert detail["tax_difference"] == "13.00"
+    assert any("明细OCR" in issue for issue in mismatch["detail_issues"])
 
 
 def test_coherent_red_invoice_is_supported():

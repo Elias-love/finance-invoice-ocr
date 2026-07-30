@@ -125,6 +125,16 @@
         }
         .retry-failed { display: none; background: #b45309; }
         .evidence-line { margin-top: 7px; color: #64748b; font-size: 12px; }
+        .detail-alert {
+            margin: 0 0 12px;
+            padding: 10px 12px;
+            border-radius: 6px;
+            background: #fffbeb;
+            border: 1px solid #f59e0b;
+            color: #92400e;
+            font-size: 12px;
+            line-height: 1.65;
+        }
         .system-status, .error-box {
             padding: 11px 14px;
             border-radius: 8px;
@@ -322,7 +332,7 @@
         </div>
         
         <div class="footer">
-            © 财务部增值税发票智能识别与复核系统 v3.0 | 2026 年 7 月
+            © 财务部增值税发票智能识别与复核系统 v3.1 | 2026 年 7 月
         </div>
     </div>
 
@@ -532,8 +542,9 @@
                     message: '未取得后端校验结果，需要人工复核'
                 };
                 const review = item._review || {};
+                const businessRisk = review.business_risk_level || review.risk_level || 'medium';
                 const verificationClass = review.review_status === 'auto_pass'
-                    ? 'success' : (control.status === 'pass' ? 'pending' : 'error');
+                    ? 'success' : (businessRisk === 'high' ? 'error' : 'pending');
                 const statusLabel = {
                     auto_pass: '机器预审通过',
                     pending: '待人工复核',
@@ -550,8 +561,30 @@
                     verified: '二维码交叉验证一致',
                     mismatch: '二维码字段冲突',
                     partial: '二维码可读但证据不足',
-                    unavailable: '二维码未读取'
-                }[review.evidence_channels?.qr_crosscheck?.status] || '二维码未读取';
+                    unavailable: '二维码证据未取得（不代表发票异常）'
+                }[review.evidence_channels?.qr_crosscheck?.status]
+                    || '二维码证据未取得';
+                const detail = review.evidence_channels?.detail_integrity?.detail
+                    || control.checks?.detail_reconciliation || {};
+                const detailStatus = review.detail_integrity || detail.status || 'unavailable';
+                const detailLabel = {
+                    pass: '明细OCR汇总一致',
+                    incomplete: '明细OCR可能漏行',
+                    partial: '明细OCR证据不完整',
+                    unavailable: '未取得明细汇总证据'
+                }[detailStatus] || detailStatus;
+                const detailAlert = detailStatus === 'incomplete' ? `
+                    <div class="detail-alert">
+                        <strong>明细OCR完整性异常，不代表票头字段错误</strong><br>
+                        已提取 ${escapeHtml(detail.extracted_rows ?? '-')} 行；
+                        明细金额 ${escapeHtml(detail.extracted_amount ?? '-')}，
+                        票头金额 ${escapeHtml(detail.header_amount ?? '-')}，
+                        差额 ${escapeHtml(detail.amount_difference ?? '-')}；
+                        明细税额 ${escapeHtml(detail.extracted_tax ?? '-')}，
+                        票头税额 ${escapeHtml(detail.header_tax ?? '-')}，
+                        差额 ${escapeHtml(detail.tax_difference ?? '-')}。
+                    </div>
+                ` : '';
                 
                 html += `
                     <div class="result-item ${duplicateClass}" id="result-${index}">
@@ -562,14 +595,17 @@
                         </div>
                         <div class="review-meta">
                             状态：${escapeHtml(statusLabel)}
-                            · 风险：${escapeHtml({high:'高',medium:'中',low:'低'}[review.risk_level] || '-')}
-                            · 规则证据：${escapeHtml({high:'高',medium:'中',low:'低'}[review.evidence_grade] || '-')}
+                            · 业务风险：${escapeHtml({high:'高',medium:'中',low:'低'}[businessRisk] || '-')}
+                            · 处理优先级：${escapeHtml({high:'高',medium:'中',normal:'常规'}[review.processing_priority] || '-')}
+                            · 证据完整度：${escapeHtml({complete:'完整',partial:'部分缺失',insufficient:'不足'}[review.evidence_completeness] || '-')}
                             ${item._record_id ? ` · <a href="/admin/review/${Number(item._record_id)}?return_to=%2F">进入人工复核</a>` : ''}
                             <div class="evidence-line">
                                 ${escapeHtml(qualityStatus)} · ${escapeHtml(qrStatus)}
+                                · ${escapeHtml(detailLabel)}
                                 ${item._cache_hit ? ' · 已复用历史识别缓存，未重复调用付费 OCR' : ''}
                             </div>
                         </div>
+                        ${detailAlert}
                         <div class="row">
                             <div><span class="label">发票号码：</span><span class="value">${escapeHtml(item.InvoiceNum || item.InvoiceNo || '-')}</span></div>
                             <div><span class="label">开票日期：</span><span class="value">${escapeHtml(item.InvoiceDate || '-')}</span></div>

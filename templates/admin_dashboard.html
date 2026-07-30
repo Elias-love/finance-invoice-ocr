@@ -85,7 +85,7 @@
             <div class="table-header">
                 <div>
                     <h2>识别与复核队列</h2>
-                    <p style="color:#64748b; margin:6px 0 0; font-size:13px;">高风险和抽样记录进入人工队列；机器预审通过不等同于税局验真。</p>
+                    <p style="color:#64748b; margin:6px 0 0; font-size:13px;">业务风险、证据完整度和处理优先级分开判断；机器预审通过不等同于税局验真。</p>
                 </div>
                 <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                     <a href="/admin/export/history" class="btn btn-primary">📊 导出Excel</a>
@@ -110,13 +110,16 @@
                 <table>
                     <thead>
                         <tr>
-                            <th>ID</th><th>时间</th><th>复核状态</th><th>风险</th><th>发票号码</th>
+                            <th>ID</th><th>时间</th><th>复核状态</th><th>业务风险</th><th>处理优先级</th><th>明细完整性</th><th>发票号码</th>
                             <th>购买方</th><th>销售方</th><th>金额</th><th>税额</th><th>操作</th>
                         </tr>
                     </thead>
                     <tbody>
                         {% for r in records %}
                         {% set d = r.data %}
+                        {% set business_risk = r.review.business_risk_level or r.risk_level %}
+                        {% set priority = r.review.processing_priority or '-' %}
+                        {% set detail_status = r.review.detail_integrity or '-' %}
                         <tr>
                             <td>{{ r.id }}</td>
                             <td>{{ r.created_at }}</td>
@@ -124,9 +127,11 @@
                                 {% set status_labels = {'pending':'待人工复核','auto_pass':'机器预审通过','approved':'人工已通过','rejected':'已驳回'} %}
                                 <span class="badge {{ r.review_status }}">{{ status_labels.get(r.review_status, r.review_status) }}</span>
                             </td>
-                            <td class="risk-{{ r.risk_level }}">
-                                {{ {'high':'高','medium':'中','low':'低'}.get(r.risk_level, '-') }}
+                            <td class="risk-{{ business_risk }}">
+                                {{ {'high':'高','medium':'中','low':'低'}.get(business_risk, '-') }}
                             </td>
+                            <td>{{ {'high':'高','medium':'中','normal':'常规'}.get(priority, priority) }}</td>
+                            <td>{{ {'pass':'一致','incomplete':'疑似漏行','partial':'部分证据','unavailable':'未取得'}.get(detail_status, detail_status) }}</td>
                             <td>{{ d.InvoiceNum or d.InvoiceNo or '-' }}</td>
                             <td>{{ d.PurchaserName or '-' }}</td>
                             <td>{{ d.SellerName or '-' }}</td>
@@ -135,7 +140,7 @@
                             <td><a class="review-link" href="/admin/review/{{ r.id }}">查看 / 复核</a></td>
                         </tr>
                         {% else %}
-                        <tr><td colspan="10" class="empty">当前筛选下暂无记录</td></tr>
+                        <tr><td colspan="12" class="empty">当前筛选下暂无记录</td></tr>
                         {% endfor %}
                     </tbody>
                 </table>

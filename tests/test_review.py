@@ -72,10 +72,53 @@ def test_high_value_invoice_requires_review(monkeypatch):
         "TotalAmount": "100000.00",
         "TotalTax": "13000.00",
         "AmountInFiguers": "113000.00",
+        "_quality": {"status": "pass", "errors": [], "warnings": []},
+        "_qr": {
+            "status": "verified",
+            "matches": ["发票号码", "开票日期", "二维码金额"],
+            "mismatches": [],
+        },
     }
     review = assess_review(data, validate_invoice(data))
     assert review["review_status"] == "pending"
-    assert review["risk_level"] == "medium"
+    assert review["business_risk_level"] == "low"
+    assert review["processing_priority"] == "medium"
+    assert review["evidence_completeness"] == "complete"
+
+
+def test_detail_ocr_gap_is_not_invoice_business_risk(monkeypatch):
+    monkeypatch.setattr(config, "REQUIRE_QR_FOR_AUTO_PASS", False)
+    data = {
+        **VALID,
+        "CommodityAmount": [{"row": "1", "word": "900.00"}],
+        "CommodityTax": [{"row": "1", "word": "117.00"}],
+        "CommodityTaxRate": [{"row": "1", "word": "13%"}],
+    }
+    control = validate_invoice(data)
+    review = assess_review(data, control)
+    assert control["status"] == "pass"
+    assert review["review_status"] == "pending"
+    assert review["business_risk_level"] == "low"
+    assert review["processing_priority"] == "medium"
+    assert review["detail_integrity"] == "incomplete"
+    assert review["evidence_completeness"] == "partial"
+
+
+def test_missing_qr_is_evidence_gap_not_invoice_risk():
+    data = {
+        **VALID,
+        "_quality": {"status": "pass", "errors": [], "warnings": []},
+        "_qr": {
+            "status": "unavailable",
+            "message": "二维码证据未取得，不代表发票异常",
+        },
+    }
+    review = assess_review(data, validate_invoice(data))
+    assert review["review_status"] == "pending"
+    assert review["business_risk_level"] == "low"
+    assert review["processing_priority"] == "normal"
+    assert review["evidence_completeness"] == "partial"
+    assert "不代表发票异常" in review["message"]
 
 
 def test_sampling_key_is_per_invoice_page(monkeypatch):

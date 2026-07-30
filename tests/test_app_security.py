@@ -480,6 +480,8 @@ def test_human_can_override_detail_mismatch_with_mandatory_note(
     denied = client.post(f"/admin/review/{rid}", data=form)
     assert denied.status_code == 200
     assert "必须填写复核依据" in denied.get_data(as_text=True)
+    assert "明细OCR完整性需要复核" in denied.get_data(as_text=True)
+    assert "票头字段本身可以仍然正确" in denied.get_data(as_text=True)
 
     approved = client.post(
         f"/admin/review/{rid}",

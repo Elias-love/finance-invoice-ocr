@@ -53,10 +53,17 @@ def assess_review(
 ) -> dict:
     """生成机器预审结果，决定自动通过或进入人工复核队列。"""
     checks: dict[str, dict] = {}
-    hard_reasons: list[str] = []
-    soft_reasons: list[str] = []
+    business_reasons: list[str] = []
+    business_warnings: list[str] = []
+    detail_reasons: list[str] = list(control.get("detail_issues", []))
+    evidence_gaps: list[str] = []
+    policy_reasons: list[str] = []
     quality = data.get("_quality") or {}
     qr = data.get("_qr") or {}
+    detail = control.get("checks", {}).get("detail_reconciliation", {})
+    detail_integrity = detail.get("status", "unavailable")
+    if detail_integrity == "partial" and not detail_reasons:
+        detail_reasons.append("明细OCR字段不完整，无法完成汇总校验")
 
     for key, label in config.REVIEW_FIELDS:
         value = field(data, key).strip()
@@ -64,7 +71,7 @@ def assess_review(
             checks[key] = {
                 "label": label, "status": "error", "reason": "关键字段缺失",
             }
-            hard_reasons.append(f"{label}缺失")
+            business_reasons.append(f"{label}缺失")
         elif value:
             checks[key] = {
                 "label": label, "status": "pass", "reason": "已识别",
@@ -75,7 +82,7 @@ def assess_review(
             }
 
     invoice_num = field(data, "InvoiceNum").strip()
-    if invoice_num and not re.fullmatch(r"[A-Za-z0-9]{8,20}", invoice_num):
+    if invoice_num and not re.fullmatch(r"[A-Za-z0-9]{8,24}", invoice_num):
         checks["InvoiceNum"] = {
             "label": FIELD_LABELS["InvoiceNum"],
             "status": "error",
@@ -98,7 +105,7 @@ def assess_review(
                 "status": "error",
                 "reason": f"识别值与辅助校验值不一致（{confirm}）",
             }
-            hard_reasons.append(f"{label}辅助校验不一致")
+            business_reasons.append(f"{label}辅助校验不一致")
 
     amount = _decimal(field(data, "TotalAmount"))
     tax = _decimal(field(data, "TotalTax"))
@@ -109,26 +116,27 @@ def assess_review(
                 checks[key]["reason"] = "价税勾稽通过"
 
     if duplicate:
-        hard_reasons.append("本次识别批次存在相同发票号码")
+        business_reasons.append("本次识别批次存在相同发票号码")
 
     for error in control.get("errors", []):
-        if error not in hard_reasons:
-            hard_reasons.append(error)
-    soft_reasons.extend(control.get("warnings", []))
+        if error not in business_reasons:
+            business_reasons.append(error)
+    business_warnings.extend(control.get("warnings", []))
 
-    hard_reasons.extend(
-        reason for reason in quality.get("errors", [])
-        if reason not in hard_reasons
-    )
-    soft_reasons.extend(
-        reason for reason in quality.get("warnings", [])
-        if reason not in soft_reasons
+    quality_errors = list(quality.get("errors", []))
+    quality_warnings = list(quality.get("warnings", []))
+    evidence_gaps.extend(quality_errors)
+    evidence_gaps.extend(
+        reason for reason in quality_warnings if reason not in evidence_gaps
     )
     if qr.get("status") == "mismatch":
-        hard_reasons.append(qr.get("message") or "二维码与 OCR 字段不一致")
+        business_reasons.append(
+            qr.get("message") or "二维码与 OCR 字段不一致"
+        )
     elif config.REQUIRE_QR_FOR_AUTO_PASS and qr.get("status") != "verified":
-        soft_reasons.append(
-            qr.get("message") or "未完成二维码与 OCR 交叉验证"
+        evidence_gaps.append(
+            qr.get("message")
+            or "二维码证据未取得，不代表发票异常"
         )
 
     threshold = _decimal(config.HIGH_VALUE_REVIEW_AMOUNT) or Decimal("100000")
@@ -136,10 +144,16 @@ def assess_review(
         amount + tax if amount is not None and tax is not None else None
     )
     if total_value is not None and abs(total_value) >= threshold:
-        soft_reasons.append(f"价税合计达到大额复核阈值 {threshold}")
+        policy_reasons.append(f"价税合计达到大额复核阈值 {threshold}")
 
     sampled = False
-    if not hard_reasons and not soft_reasons:
+    if not (
+        business_reasons
+        or business_warnings
+        or detail_reasons
+        or evidence_gaps
+        or policy_reasons
+    ):
         sample_key = "|".join((
             source_sha256,
             str(source_page or data.get("_source_page") or ""),
@@ -147,36 +161,71 @@ def assess_review(
         ))
         sampled = _sampled(sample_key, config.REVIEW_SAMPLE_RATE)
         if sampled:
-            soft_reasons.append("命中自动通过结果的抽样质检")
+            policy_reasons.append("命中自动通过结果的抽样质检")
 
-    if hard_reasons:
-        risk_level = "high"
-        review_status = "pending"
-        evidence_grade = "low"
-    elif soft_reasons:
-        risk_level = "medium" if not sampled else "low"
-        review_status = "pending"
-        evidence_grade = "medium"
+    if business_reasons:
+        business_risk_level = "high"
+    elif business_warnings:
+        business_risk_level = "medium"
     else:
-        risk_level = "low"
-        review_status = "auto_pass" if config.AUTO_PASS_ENABLED else "pending"
-        evidence_grade = "high"
+        business_risk_level = "low"
 
-    reasons = hard_reasons + soft_reasons
+    if business_reasons or quality_errors:
+        processing_priority = "high"
+    elif business_warnings or detail_reasons or quality_warnings or policy_reasons:
+        processing_priority = "medium"
+    else:
+        processing_priority = "normal"
+
+    if business_reasons or quality_errors:
+        evidence_grade = "low"
+        evidence_completeness = "insufficient"
+    elif business_warnings or detail_reasons or evidence_gaps:
+        evidence_grade = "medium"
+        evidence_completeness = "partial"
+    else:
+        evidence_grade = "high"
+        evidence_completeness = "complete"
+
+    reasons = (
+        business_reasons
+        + business_warnings
+        + detail_reasons
+        + evidence_gaps
+        + policy_reasons
+    )
+    review_status = (
+        "pending"
+        if reasons or not config.AUTO_PASS_ENABLED
+        else "auto_pass"
+    )
     message = {
         "auto_pass": "机器预审通过，可直接流转并按策略抽样质检",
-        "pending": "需要人工复核：" + ("；".join(reasons) if reasons else "自动通过未启用"),
+        "pending": "需要人工复核：" + (
+            "；".join(reasons) if reasons else "自动通过未启用"
+        ),
     }[review_status]
-
     return {
-        "policy_version": "3.1",
+        "policy_version": "3.2",
         "review_status": review_status,
-        "risk_level": risk_level,
+        # risk_level 保留给旧数据库/接口，语义调整为“业务风险”。
+        "risk_level": business_risk_level,
+        "business_risk_level": business_risk_level,
+        "processing_priority": processing_priority,
         "evidence_grade": evidence_grade,
+        "evidence_completeness": evidence_completeness,
+        "detail_integrity": detail_integrity,
         "confidence_type": "deterministic_controls",
         "confidence_score": None,
         "sampled": sampled,
         "reasons": reasons,
+        "reason_groups": {
+            "business": business_reasons,
+            "business_warnings": business_warnings,
+            "detail_integrity": detail_reasons,
+            "evidence_gaps": evidence_gaps,
+            "policy": policy_reasons,
+        },
         "field_checks": checks,
         "evidence_label": "规则证据",
         "evidence_channels": {
@@ -192,6 +241,7 @@ def assess_review(
             "qr_crosscheck": {
                 "status": qr.get("status", "unavailable"),
                 "label": "二维码交叉验证",
+                "decoder": qr.get("decoder"),
                 "matches": qr.get("matches", []),
                 "mismatches": qr.get("mismatches", []),
             },
@@ -199,6 +249,11 @@ def assess_review(
                 "status": "pass" if control.get("status") == "pass" else "review",
                 "label": "票面与财务规则",
                 "detail": control.get("checks", {}),
+            },
+            "detail_integrity": {
+                "status": detail_integrity,
+                "label": "明细OCR完整性",
+                "detail": detail,
             },
             "tax_authenticity": {
                 "status": "not_connected",

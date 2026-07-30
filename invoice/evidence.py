@@ -104,7 +104,7 @@ def parse_invoice_qr(text: str) -> dict:
 
 
 def decode_invoice_qr(image_bytes: bytes) -> dict:
-    """使用 OpenCV 解码二维码；二维码不可读时返回明确的非验真状态。"""
+    """双引擎解码二维码；失败只表示证据未取得，不代表发票异常。"""
     image = _decode_image(image_bytes)
     if image is None:
         return {
@@ -116,7 +116,7 @@ def decode_invoice_qr(image_bytes: bytes) -> dict:
 
     import cv2
 
-    payloads: list[str] = []
+    payloads: list[tuple[str, str]] = []
     height, width = image.shape[:2]
     top_left = image[: max(1, int(height * 0.6)), : max(1, int(width * 0.48))]
     enlarged = cv2.resize(top_left, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
@@ -131,31 +131,54 @@ def decode_invoice_qr(image_bytes: bytes) -> dict:
                 candidate
             )
             if ok:
-                payloads.extend(value for value in decoded_info if value)
+                payloads.extend(
+                    (value, "OpenCV") for value in decoded_info if value
+                )
         except (cv2.error, ValueError):
             pass
         try:
             value, _points, _straight = detector.detectAndDecode(candidate)
             if value:
-                payloads.append(value)
+                payloads.append((value, "OpenCV"))
         except (cv2.error, ValueError):
             pass
         if payloads:
             break
 
-    for payload in payloads:
+    # OpenCV 对中心留白、密集码点的电子发票二维码偶有检测到但无法解码；
+    # ZXing 使用另一套定位和纠错实现，作为真正独立的失败兜底。
+    if not payloads:
+        try:
+            import zxingcpp
+
+            for candidate in (image, top_left, enlarged, binary):
+                results = zxingcpp.read_barcodes(candidate)
+                payloads.extend(
+                    (result.text, "ZXing") for result in results if result.text
+                )
+                if payloads:
+                    break
+        except (ImportError, RuntimeError, ValueError):
+            pass
+
+    for payload, decoder in payloads:
         parsed = parse_invoice_qr(payload)
         if parsed["parsed"]:
             return {
                 "status": "decoded",
                 "decoded": True,
-                "message": "已读取发票二维码，等待与 OCR 字段交叉核对",
+                "decoder": decoder,
+                "message": (
+                    f"已通过 {decoder} 读取发票二维码，"
+                    "等待与 OCR 字段交叉核对"
+                ),
                 "fields": parsed["fields"],
             }
     return {
         "status": "unavailable",
         "decoded": False,
-        "message": "未读取到可解析的发票二维码",
+        "decoder": None,
+        "message": "二维码证据未取得，不代表发票异常",
         "fields": {},
     }
 

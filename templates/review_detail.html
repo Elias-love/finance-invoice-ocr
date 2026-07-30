@@ -18,14 +18,19 @@
         .summary { padding: 12px 14px; border-radius: 8px; margin-bottom: 16px; }
         .summary.high { background: #fee2e2; color: #991b1b; }
         .summary.medium { background: #fef3c7; color: #92400e; }
-        .summary.low { background: #d1fae5; color: #065f46; }
+        .summary.normal, .summary.low { background: #dbeafe; color: #1e40af; }
         .notice { background: #eff6ff; color: #1e40af; padding: 11px 13px; border-radius: 8px; font-size: 13px; line-height: 1.55; margin-bottom: 16px; }
         .evidence-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 9px; margin-bottom: 16px; }
         .evidence-card { border: 1px solid #dbe3ec; border-radius: 8px; padding: 10px 12px; font-size: 12px; color: #475569; }
         .evidence-card strong { display: block; color: #1e293b; margin-bottom: 4px; }
         .evidence-card.pass, .evidence-card.verified, .evidence-card.completed { border-color: #10b981; background: #f0fdf4; }
         .evidence-card.error, .evidence-card.mismatch, .evidence-card.review { border-color: #ef4444; background: #fff7f7; }
-        .evidence-card.warning, .evidence-card.partial, .evidence-card.unavailable, .evidence-card.not_connected { border-color: #f59e0b; background: #fffbeb; }
+        .evidence-card.warning, .evidence-card.partial, .evidence-card.incomplete, .evidence-card.unavailable, .evidence-card.not_connected { border-color: #f59e0b; background: #fffbeb; }
+        .detail-review { border: 1px solid #f59e0b; background: #fffbeb; border-radius: 8px; padding: 12px; margin-bottom: 16px; color: #78350f; }
+        .detail-review h3 { margin: 0 0 8px; font-size: 14px; }
+        .detail-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+        .detail-metric { background: white; border-radius: 6px; padding: 9px; font-size: 12px; }
+        .detail-metric strong { display: block; color: #475569; margin-bottom: 4px; }
         .error { background: #fee2e2; color: #991b1b; padding: 11px 13px; border-radius: 8px; margin-bottom: 16px; }
         .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
         .field { border: 1px solid #dbe3ec; border-radius: 8px; padding: 10px; }
@@ -50,6 +55,7 @@
         @media (max-width: 620px) {
             .field-grid { grid-template-columns: 1fr; }
             .evidence-grid { grid-template-columns: 1fr; }
+            .detail-metrics { grid-template-columns: 1fr; }
             .layout { padding: 0 10px; }
         }
     </style>
@@ -78,11 +84,14 @@
         <section class="panel">
             <div class="panel-title">机器预审证据与人工确认</div>
             <div class="body">
-                {% set risk = record.review.risk_level or record.risk_level or 'medium' %}
-                <div class="summary {{ risk }}">
+                {% set business_risk = record.review.business_risk_level or record.review.risk_level or record.risk_level or 'medium' %}
+                {% set priority = record.review.processing_priority or ('high' if business_risk == 'high' else 'medium') %}
+                <div class="summary {{ priority }}">
                     <strong>{{ record.review.message or '待人工复核' }}</strong>
                     <div style="margin-top:6px; font-size:13px;">
-                        规则证据：{{ {'high':'高','medium':'中','low':'低'}.get(record.review.evidence_grade, record.review.evidence_grade or '-') }}
+                        业务风险：{{ {'high':'高','medium':'中','low':'低'}.get(business_risk, '-') }}
+                        · 处理优先级：{{ {'high':'高','medium':'中','normal':'常规'}.get(priority, '-') }}
+                        · 证据完整度：{{ {'complete':'完整','partial':'部分缺失','insufficient':'不足'}.get(record.review.evidence_completeness, '-') }}
                         · 当前状态：{{ {'pending':'待复核','auto_pass':'机器预审通过','approved':'人工已通过','rejected':'已驳回'}.get(record.review_status, record.review_status) }}
                     </div>
                 </div>
@@ -96,10 +105,11 @@
                     'image_quality':'图像质量门禁',
                     'qr_crosscheck':'二维码交叉验证',
                     'business_rules':'票面与财务规则',
+                    'detail_integrity':'明细OCR完整性',
                     'tax_authenticity':'税务验真（暂未接入）'
                 } %}
                 <div class="evidence-grid">
-                    {% for key in ['ocr', 'image_quality', 'qr_crosscheck', 'business_rules', 'tax_authenticity'] %}
+                    {% for key in ['ocr', 'image_quality', 'qr_crosscheck', 'business_rules', 'detail_integrity', 'tax_authenticity'] %}
                         {% set channel = channels.get(key, {}) %}
                         <div class="evidence-card {{ channel.status or 'unavailable' }}">
                             <strong>{{ channel.label or channel_labels.get(key, key) }}</strong>
@@ -107,9 +117,16 @@
                                 {{ channel.status }} · {{ channel.detail.width }}×{{ channel.detail.height }}px
                                 · 清晰度 {{ channel.detail.blur_score }}
                             {% elif key == 'qr_crosscheck' %}
-                                {{ channel.status or 'unavailable' }}
+                                {% if channel.status == 'unavailable' %}
+                                    证据未取得，不代表发票异常
+                                {% else %}
+                                    {{ channel.status or 'unavailable' }}
+                                {% endif %}
+                                {% if channel.decoder %} · {{ channel.decoder }}{% endif %}
                                 {% if channel.matches %} · 一致：{{ channel.matches|join('、') }}{% endif %}
                                 {% if channel.mismatches %} · 冲突：{{ channel.mismatches|join('、') }}{% endif %}
+                            {% elif key == 'detail_integrity' %}
+                                {{ {'pass':'汇总一致','incomplete':'可能漏行/合并行','partial':'证据不完整','unavailable':'未取得明细证据'}.get(channel.status, channel.status or 'unavailable') }}
                             {% elif key == 'tax_authenticity' %}
                                 暂未接入，不参与自动通过判断
                             {% else %}
@@ -118,6 +135,20 @@
                         </div>
                     {% endfor %}
                 </div>
+                {% set detail = channels.get('detail_integrity', {}).get('detail', record.validation.get('checks', {}).get('detail_reconciliation', {})) %}
+                {% if detail.get('status') == 'incomplete' %}
+                <div class="detail-review">
+                    <h3>明细OCR完整性需要复核——票头字段本身可以仍然正确</h3>
+                    <div style="font-size:12px; margin-bottom:9px;">
+                        OCR共提取 {{ detail.get('extracted_rows', '-') }} 行。以下差额表示“票头－OCR明细汇总”，通常由明细漏行、合并行或折扣行未完整提取造成。
+                    </div>
+                    <div class="detail-metrics">
+                        <div class="detail-metric"><strong>金额</strong>明细 {{ detail.get('extracted_amount', '-') }}<br>票头 {{ detail.get('header_amount', '-') }}<br>差额 {{ detail.get('amount_difference', '-') }}</div>
+                        <div class="detail-metric"><strong>税额</strong>明细 {{ detail.get('extracted_tax', '-') }}<br>票头 {{ detail.get('header_tax', '-') }}<br>差额 {{ detail.get('tax_difference', '-') }}</div>
+                        <div class="detail-metric"><strong>处理建议</strong>仅票头入账可人工核对后通过；需要商品明细入账时应补全明细。</div>
+                    </div>
+                </div>
+                {% endif %}
                 {% if error %}<div class="error">{{ error }}</div>{% endif %}
 
                 <form method="post">

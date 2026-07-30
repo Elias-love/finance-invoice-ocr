@@ -1,9 +1,11 @@
 import cv2
 import numpy as np
+from types import SimpleNamespace
 
 from invoice.evidence import (
     analyze_image_quality,
     compare_qr_with_ocr,
+    decode_invoice_qr,
     parse_invoice_qr,
 )
 
@@ -66,3 +68,31 @@ def test_low_resolution_image_fails_quality_gate():
     result = analyze_image_quality(encoded.tobytes())
     assert result["status"] == "error"
     assert any("短边" in reason for reason in result["errors"])
+
+
+def test_zxing_fallback_decodes_when_opencv_fails(monkeypatch):
+    import zxingcpp
+
+    class EmptyDetector:
+        def detectAndDecodeMulti(self, _image):
+            return False, (), None, ()
+
+        def detectAndDecode(self, _image):
+            return "", None, None
+
+    monkeypatch.setattr(cv2, "QRCodeDetector", EmptyDetector)
+    monkeypatch.setattr(
+        zxingcpp,
+        "read_barcodes",
+        lambda _image: [
+            SimpleNamespace(
+                text="01,31,,26442000005310626521,31605.00,20260514,,7B05"
+            )
+        ],
+    )
+    image = np.full((1200, 1600, 3), 255, dtype=np.uint8)
+    ok, encoded = cv2.imencode(".png", image)
+    assert ok
+    result = decode_invoice_qr(encoded.tobytes())
+    assert result["decoded"] is True
+    assert result["decoder"] == "ZXing"

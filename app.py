@@ -61,7 +61,7 @@ def create_app() -> Flask:
                 record["id"], validation=control, review=review
             )
         elif (
-            record["review"].get("policy_version") != "3.1"
+            record["review"].get("policy_version") != "3.2"
             and record.get("source_path")
         ):
             # 旧记录无需再次付费 OCR：从已保存原票重算图像质量和二维码证据。
@@ -385,6 +385,7 @@ def _register_routes(app: Flask):
                 and (
                     control["status"] != "pass"
                     or review.get("risk_level") == "high"
+                    or review.get("detail_integrity") == "incomplete"
                 )
                 and not review_note
             ):

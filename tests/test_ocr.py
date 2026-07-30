@@ -154,6 +154,17 @@ def test_collect_success_appends():
     assert results == [{"InvoiceNum": "X"}]
 
 
+def test_collect_attaches_source_page_metadata():
+    results = []
+    ocr._collect(
+        {"words_result": {"InvoiceNum": "X"}},
+        results,
+        "PDF 第 3 页",
+        source_page=3,
+    )
+    assert results == [{"InvoiceNum": "X", "_source_page": 3}]
+
+
 def test_ocr_refreshes_invalid_token_once(monkeypatch):
     tokens = iter(["OLD", "NEW"])
     monkeypatch.setattr(ocr, "get_baidu_token", lambda: next(tokens))

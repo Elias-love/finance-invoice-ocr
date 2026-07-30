@@ -54,7 +54,6 @@ EXPORT_FIELD_NAMES = ["发票号码", "开票日期", "购买方名称",
 
 REVIEW_FIELDS = [
     ("InvoiceTypeOrg", "发票名称"),
-    ("InvoiceCode", "发票代码"),
     ("InvoiceNum", "发票号码"),
     ("InvoiceDate", "开票日期"),
     ("PurchaserName", "购买方名称"),

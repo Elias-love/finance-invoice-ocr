@@ -176,20 +176,34 @@ def recognize_bytes(file_bytes: bytes, filename: str) -> list[dict]:
             for page_num in range(len(pdf_doc)):
                 pix = pdf_doc[page_num].get_pixmap(matrix=mat)
                 ocr_result = ocr_image(pix.tobytes("png"))
-                _collect(ocr_result, results, f"PDF 第 {page_num + 1} 页")
+                _collect(
+                    ocr_result,
+                    results,
+                    f"PDF 第 {page_num + 1} 页",
+                    source_page=page_num + 1,
+                )
         finally:
             pdf_doc.close()
     else:
         ocr_result = ocr_image(file_bytes)
-        _collect(ocr_result, results, "图片")
+        _collect(ocr_result, results, "图片", source_page=1)
 
     return results
 
 
-def _collect(ocr_result: dict, results: list, label: str):
+def _collect(
+    ocr_result: dict,
+    results: list,
+    label: str,
+    *,
+    source_page: int | None = None,
+):
     """把单次 OCR 结果并入 results；遇到百度错误码则抛出 OcrError。"""
     if ocr_result.get("words_result"):
-        results.append(ocr_result["words_result"])
+        item = dict(ocr_result["words_result"])
+        if source_page is not None:
+            item["_source_page"] = source_page
+        results.append(item)
         logger.info("%s识别成功", label)
     elif ocr_result.get("error_msg") or ocr_result.get("error_code"):
         msg = ocr_result.get("error_msg", "未知错误")

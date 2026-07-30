@@ -358,6 +358,37 @@ def _register_routes(app: Flask):
             as_attachment=request.args.get("download") == "1",
         )
 
+    @app.route("/admin/source/<int:record_id>/preview")
+    @_admin_required
+    def admin_source_preview(record_id: int):
+        """复核页只展示当前记录对应的 PDF 单页；图片则展示原图。"""
+        record = storage.get_by_id(record_id)
+        if not record or not record.get("source_path"):
+            abort(404)
+        source_path = Path(record["source_path"]).resolve()
+        allowed_dir = (config.DB_PATH.parent / "uploads").resolve()
+        if source_path.parent != allowed_dir or not source_path.exists():
+            abort(403)
+        if source_path.suffix.lower() != ".pdf":
+            return send_file(source_path)
+
+        import fitz
+        with fitz.open(source_path) as document:
+            page_number = int(record.get("source_page") or 1)
+            if page_number < 1 or page_number > len(document):
+                abort(404, description="来源页码超出 PDF 范围")
+            zoom = max(config.PDF_ZOOM, 1.5)
+            pixmap = document[page_number - 1].get_pixmap(
+                matrix=fitz.Matrix(zoom, zoom),
+                alpha=False,
+            )
+            image_bytes = pixmap.tobytes("png")
+        return Response(
+            image_bytes,
+            mimetype="image/png",
+            headers={"Cache-Control": "private, max-age=300"},
+        )
+
     @app.route("/admin/export/history")
     @_admin_required
     def admin_export_history():
@@ -419,7 +450,10 @@ def _register_routes(app: Flask):
                 for record in current_batch
                 if field(record["data"], "InvoiceNum").strip()
             }
-            for invoice_data in results:
+            for result_position, invoice_data in enumerate(results, start=1):
+                source_page = int(
+                    invoice_data.pop("_source_page", result_position)
+                )
                 control = validate_invoice(invoice_data)
                 invoice_num = field(invoice_data, "InvoiceNum").strip()
                 duplicate = bool(
@@ -445,6 +479,7 @@ def _register_routes(app: Flask):
                     review=review,
                     source_filename=file.filename,
                     source_path=source_path,
+                    source_page=source_page,
                 )
                 if invoice_num:
                     seen_invoice_nums.add(invoice_num)

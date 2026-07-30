@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS invoices (
     review_note TEXT,
     source_filename TEXT,
     source_path TEXT,
+    source_page INTEGER,
     raw_json      TEXT NOT NULL
 );
 
@@ -95,16 +96,39 @@ def init_db():
             "review_note": "ALTER TABLE invoices ADD COLUMN review_note TEXT",
             "source_filename": "ALTER TABLE invoices ADD COLUMN source_filename TEXT",
             "source_path": "ALTER TABLE invoices ADD COLUMN source_path TEXT",
+            "source_page": "ALTER TABLE invoices ADD COLUMN source_page INTEGER",
         }
         for column, sql in migrations.items():
             if column not in existing:
                 conn.execute(sql)
 
+        # 升级前的多页 PDF 记录没有页码。识别结果在同一秒内连续写入，
+        # 按“文件哈希 + 写入时间”顺序补齐，确保现有复核记录也能定位单页。
+        page_counters = {}
+        rows = conn.execute(
+            """SELECT id, created_at, source_sha256, source_page
+               FROM invoices ORDER BY id ASC"""
+        ).fetchall()
+        for row in rows:
+            if not row["source_sha256"]:
+                continue
+            group = (row["source_sha256"], row["created_at"])
+            current = page_counters.get(group, 0)
+            if row["source_page"] is None:
+                current += 1
+                conn.execute(
+                    "UPDATE invoices SET source_page = ? WHERE id = ?",
+                    (current, row["id"]),
+                )
+            else:
+                current = max(current, int(row["source_page"]))
+            page_counters[group] = current
+
 
 def add_record(invoice_data: dict, user: str = "匿名",
                source_sha256: str = "", validation: dict | None = None,
                review: dict | None = None, source_filename: str = "",
-               source_path: str = "") -> int:
+               source_path: str = "", source_page: int | None = None) -> int:
     """写入一条发票记录，返回自增 id。"""
     d = display_fields(invoice_data)
     with _connect() as conn:
@@ -114,8 +138,8 @@ def add_record(invoice_data: dict, user: str = "匿名",
                 purchaser_name, seller_name, total_amount, total_tax,
                 source_sha256, validation_status, validation_json,
                 review_status, risk_level, review_json,
-                source_filename, source_path, raw_json)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                source_filename, source_path, source_page, raw_json)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user,
              d["invoice_num"], d["invoice_date"], d["purchaser_name"],
              d["seller_name"], d["total_amount"], d["total_tax"],
@@ -124,7 +148,7 @@ def add_record(invoice_data: dict, user: str = "匿名",
              (review or {}).get("review_status", "pending"),
              (review or {}).get("risk_level", "medium"),
              json.dumps(review or {}, ensure_ascii=False),
-             source_filename, source_path,
+             source_filename, source_path, source_page,
              json.dumps(invoice_data, ensure_ascii=False)),
         )
         conn.execute(

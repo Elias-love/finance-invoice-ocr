@@ -53,13 +53,14 @@
 
     <div class="layout">
         <section class="panel">
-            <div class="panel-title">原始凭证 · {{ record.source_filename or '文件' }}</div>
-            {% if record.source_path %}
+            <div class="panel-title">
+                原始凭证 · {{ record.source_filename or '文件' }}
                 {% if (record.source_filename or '').lower().endswith('.pdf') %}
-                <iframe class="source" src="/admin/source/{{ record.id }}"></iframe>
-                {% else %}
-                <img class="source" src="/admin/source/{{ record.id }}" alt="原始发票">
+                · 第 {{ record.source_page or 1 }} 页
                 {% endif %}
+            </div>
+            {% if record.source_path %}
+                <img class="source" src="/admin/source/{{ record.id }}/preview" alt="当前发票原始凭证">
             {% else %}
                 <div class="body">历史记录未保存原始凭证，无法预览。</div>
             {% endif %}

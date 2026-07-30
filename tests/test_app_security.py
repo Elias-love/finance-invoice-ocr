@@ -50,7 +50,9 @@ def test_review_page_renders_and_approval_is_audited(tmp_path, monkeypatch):
 
     page = client.get(f"/admin/review/{rid}")
     assert page.status_code == 200
-    assert "机器预审证据与人工确认" in page.get_data(as_text=True)
+    page_body = page.get_data(as_text=True)
+    assert "机器预审证据与人工确认" in page_body
+    assert "发票代码" not in page_body
 
     response = client.post(
         f"/admin/review/{rid}",
@@ -109,6 +111,42 @@ def test_current_batch_survives_review_navigation(tmp_path, monkeypatch):
     assert cleared.status_code == 200
     assert storage.get_by_id(rid) is not None
     assert "已恢复本批次" not in client.get("/").get_data(as_text=True)
+
+
+def test_review_preview_renders_only_record_pdf_page(tmp_path, monkeypatch):
+    import fitz
+
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "single-page-preview.db")
+    storage.init_db()
+    document = fitz.open()
+    document.new_page().insert_text((72, 72), "PAGE ONE")
+    document.new_page().insert_text((72, 72), "PAGE TWO")
+    pdf_bytes = document.tobytes()
+    document.close()
+    source_sha = "two-page-source"
+    source_path = storage.save_source(pdf_bytes, ".pdf", source_sha)
+    rid = storage.add_record(
+        {"InvoiceNum": "PAGE-2"},
+        source_sha256=source_sha,
+        source_filename="two-pages.pdf",
+        source_path=source_path,
+        source_page=2,
+    )
+    client = invoice_app.app.test_client()
+    with client.session_transaction() as sess:
+        sess["is_admin"] = True
+
+    review_page = client.get(f"/admin/review/{rid}")
+    body = review_page.get_data(as_text=True)
+    assert "two-pages.pdf" in body
+    assert "第 2 页" in body
+    assert f"/admin/source/{rid}/preview" in body
+    assert "<iframe" not in body
+
+    preview = client.get(f"/admin/source/{rid}/preview")
+    assert preview.status_code == 200
+    assert preview.mimetype == "image/png"
+    assert preview.data.startswith(b"\x89PNG\r\n\x1a\n")
 
 
 def test_empty_legacy_batch_session_recovers_latest_source(

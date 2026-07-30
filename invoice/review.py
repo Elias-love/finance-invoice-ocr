@@ -80,7 +80,6 @@ def assess_review(
         }
 
     for value_key, confirm_key in (
-        ("InvoiceCode", "InvoiceCodeConfirm"),
         ("InvoiceNum", "InvoiceNumConfirm"),
     ):
         value = field(data, value_key).strip()

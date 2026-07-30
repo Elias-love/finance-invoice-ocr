@@ -56,6 +56,52 @@ def test_token_network_error_does_not_leak_secret(monkeypatch):
     assert "VERY_SECRET" not in str(exc.value)
 
 
+def test_auto_proxy_mode_falls_back_to_direct(monkeypatch):
+    monkeypatch.setattr(config, "BAIDU_OCR_API_KEY", "k")
+    monkeypatch.setattr(config, "BAIDU_OCR_SECRET_KEY", "s")
+    monkeypatch.setattr(config, "BAIDU_OCR_PROXY_MODE", "auto")
+    calls = []
+
+    class Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"access_token": "TOK", "expires_in": 2592000}
+
+    def fake_post(*args, **kwargs):
+        calls.append(kwargs.get("proxies"))
+        if len(calls) == 1:
+            raise ocr.requests.exceptions.SSLError("proxy reset")
+        return Resp()
+
+    monkeypatch.setattr(ocr.requests, "post", fake_post)
+    assert ocr.get_baidu_token() == "TOK"
+    assert calls == [None, {"http": "", "https": "", "all": ""}]
+
+
+def test_direct_proxy_mode_bypasses_environment_proxy(monkeypatch):
+    monkeypatch.setattr(config, "BAIDU_OCR_API_KEY", "k")
+    monkeypatch.setattr(config, "BAIDU_OCR_SECRET_KEY", "s")
+    monkeypatch.setattr(config, "BAIDU_OCR_PROXY_MODE", "direct")
+    seen = {}
+
+    class Resp:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"access_token": "TOK", "expires_in": 2592000}
+
+    def fake_post(*args, **kwargs):
+        seen.update(kwargs)
+        return Resp()
+
+    monkeypatch.setattr(ocr.requests, "post", fake_post)
+    assert ocr.get_baidu_token() == "TOK"
+    assert seen["proxies"] == {"http": "", "https": "", "all": ""}
+
+
 def test_token_cached_until_expiry(monkeypatch):
     monkeypatch.setattr(config, "BAIDU_OCR_API_KEY", "k")
     monkeypatch.setattr(config, "BAIDU_OCR_SECRET_KEY", "s")

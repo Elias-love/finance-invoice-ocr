@@ -23,6 +23,56 @@ class OcrError(Exception):
     """OCR 相关的可预期错误，携带对用户友好的中文信息。"""
 
 
+def _proxy_attempts():
+    """返回 HTTP 请求的代理策略。
+
+    requests 默认读取 HTTP(S)_PROXY。部分本地代理能打开普通网页，却会重置
+    aip.baidubce.com 的 TLS 连接；auto 模式因此在系统代理失败后仅对百度 OCR
+    做一次直连兜底，不影响浏览器或其他应用的代理设置。
+    """
+    if config.BAIDU_OCR_PROXY_MODE == "direct":
+        return [("直连", {"http": "", "https": "", "all": ""})]
+    if config.BAIDU_OCR_PROXY_MODE == "system":
+        return [("系统网络", None)]
+    return [
+        ("系统网络", None),
+        ("直连兜底", {"http": "", "https": "", "all": ""}),
+    ]
+
+
+def _post_json(url: str, *, label: str, timeout: int, **kwargs) -> dict:
+    """安全调用百度接口；代理失败时可直连兜底，且不泄露 URL 中的凭证。"""
+    last_error = None
+    for route_name, proxies in _proxy_attempts():
+        request_kwargs = dict(kwargs)
+        if proxies is not None:
+            request_kwargs["proxies"] = proxies
+        try:
+            response = requests.post(url, timeout=timeout, **request_kwargs)
+            response.raise_for_status()
+            return response.json()
+        except ValueError:
+            raise OcrError(f"{label}返回了无法解析的数据，请稍后重试") from None
+        except requests.RequestException as exc:
+            last_error = exc
+            # 只记录异常类型，不记录异常原文；token URL 和 OCR URL 均含敏感信息。
+            logger.warning(
+                "%s经%s失败（%s）",
+                label,
+                route_name,
+                type(exc).__name__,
+            )
+
+    mode_hint = (
+        "；检测到本机代理时，可将 BAIDU_OCR_PROXY_MODE 设为 direct"
+        if config.BAIDU_OCR_PROXY_MODE != "direct"
+        else ""
+    )
+    raise OcrError(
+        f"{label}网络异常，请检查网络、TLS 证书和百度云服务状态{mode_hint}"
+    ) from last_error
+
+
 def get_baidu_token() -> str:
     """获取百度 access_token，命中未过期缓存则直接返回。"""
     now = time.time()
@@ -40,20 +90,16 @@ def get_baidu_token() -> str:
                 "BAIDU_OCR_API_KEY / BAIDU_OCR_SECRET_KEY"
             )
 
-        try:
-            resp = requests.post(TOKEN_URL, params={
+        data = _post_json(
+            TOKEN_URL,
+            label="获取百度 token",
+            timeout=10,
+            params={
                 "grant_type": "client_credentials",
                 "client_id": config.BAIDU_OCR_API_KEY,
                 "client_secret": config.BAIDU_OCR_SECRET_KEY,
-            }, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
-        except (requests.RequestException, ValueError):
-            # requests 的异常文本可能包含带 client_id/client_secret 的完整 URL，
-            # 绝不能原样返回前端或写入日志。
-            raise OcrError(
-                "获取百度 token 网络异常，请检查网络、TLS 证书和百度云服务状态"
-            ) from None
+            },
+        )
 
         if "access_token" not in data:
             raise OcrError(
@@ -79,19 +125,12 @@ def ocr_image(image_bytes: bytes) -> dict:
     img_base64 = base64.b64encode(image_bytes).decode("utf-8")
     for attempt in range(2):
         token = get_baidu_token()
-        try:
-            resp = requests.post(
-                f"{OCR_URL}?access_token={token}",
-                data={"image": img_base64},
-                timeout=30,
-            )
-            resp.raise_for_status()
-            result = resp.json()
-        except (requests.RequestException, ValueError):
-            # OCR URL 含 access_token，异常文本不可直接上抛。
-            raise OcrError(
-                "调用百度 OCR 网络异常，请检查网络、TLS 证书和百度云服务状态"
-            ) from None
+        result = _post_json(
+            f"{OCR_URL}?access_token={token}",
+            label="调用百度 OCR",
+            data={"image": img_base64},
+            timeout=30,
+        )
 
         # 110/111 分别表示 token 无效/过期；清缓存并自动重取一次。
         if result.get("error_code") in {110, 111} and attempt == 0:

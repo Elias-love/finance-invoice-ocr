@@ -13,6 +13,10 @@ DB_PATH = BASE_DIR / "data" / "invoices.db"
 # —— 百度云 VAT OCR 凭证 ——
 BAIDU_OCR_API_KEY = os.getenv("BAIDU_OCR_API_KEY", "")
 BAIDU_OCR_SECRET_KEY = os.getenv("BAIDU_OCR_SECRET_KEY", "")
+# system：沿用 HTTP(S)_PROXY；direct：仅百度 OCR 直连；auto：代理失败后直连兜底。
+BAIDU_OCR_PROXY_MODE = os.getenv("BAIDU_OCR_PROXY_MODE", "auto").strip().lower()
+if BAIDU_OCR_PROXY_MODE not in {"auto", "system", "direct"}:
+    BAIDU_OCR_PROXY_MODE = "auto"
 
 # —— 管理员账号 ——
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")

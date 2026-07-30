@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>发票复核 #{{ record.id }}</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; background: #eef3f8; color: #1e293b; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        .topbar { background: #0f52ba; color: white; padding: 18px 24px; display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+        .topbar h1 { margin: 0; font-size: 21px; }
+        .topbar a { color: white; text-decoration: none; }
+        .layout { max-width: 1500px; margin: 20px auto; padding: 0 18px; display: grid; grid-template-columns: minmax(360px, 1.05fr) minmax(480px, .95fr); gap: 18px; }
+        .panel { background: white; border-radius: 12px; box-shadow: 0 2px 10px rgba(15, 23, 42, .08); overflow: hidden; }
+        .panel-title { padding: 15px 18px; border-bottom: 1px solid #e2e8f0; font-weight: 700; }
+        .source { height: calc(100vh - 165px); min-height: 620px; width: 100%; border: 0; background: #e2e8f0; object-fit: contain; }
+        .body { padding: 18px; }
+        .summary { padding: 12px 14px; border-radius: 8px; margin-bottom: 16px; }
+        .summary.high { background: #fee2e2; color: #991b1b; }
+        .summary.medium { background: #fef3c7; color: #92400e; }
+        .summary.low { background: #d1fae5; color: #065f46; }
+        .notice { background: #eff6ff; color: #1e40af; padding: 11px 13px; border-radius: 8px; font-size: 13px; line-height: 1.55; margin-bottom: 16px; }
+        .error { background: #fee2e2; color: #991b1b; padding: 11px 13px; border-radius: 8px; margin-bottom: 16px; }
+        .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        .field { border: 1px solid #dbe3ec; border-radius: 8px; padding: 10px; }
+        .field.error-field { border-color: #ef4444; background: #fff7f7; }
+        .field.warning-field { border-color: #f59e0b; background: #fffbeb; }
+        label { display: block; color: #475569; font-size: 13px; margin-bottom: 6px; font-weight: 600; }
+        input, textarea { width: 100%; border: 1px solid #cbd5e1; border-radius: 6px; padding: 9px 10px; font-size: 14px; }
+        .reason { font-size: 12px; margin-top: 6px; color: #64748b; }
+        .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+        button { border: 0; border-radius: 8px; padding: 11px 18px; color: white; font-weight: 650; cursor: pointer; }
+        .save { background: #475569; }
+        .approve { background: #059669; }
+        .reject { background: #dc2626; }
+        .events { margin-top: 18px; border-top: 1px solid #e2e8f0; padding-top: 14px; }
+        .event { font-size: 13px; color: #475569; padding: 8px 0; border-bottom: 1px solid #f1f5f9; }
+        @media (max-width: 980px) {
+            .layout { grid-template-columns: 1fr; }
+            .source { height: 600px; min-height: 0; }
+        }
+        @media (max-width: 620px) {
+            .field-grid { grid-template-columns: 1fr; }
+            .layout { padding: 0 10px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="topbar">
+        <h1>发票复核 #{{ record.id }}</h1>
+        <div><a href="/admin/dashboard">返回复核队列</a> · <a href="/admin/source/{{ record.id }}?download=1">下载原文件</a></div>
+    </div>
+
+    <div class="layout">
+        <section class="panel">
+            <div class="panel-title">原始凭证 · {{ record.source_filename or '文件' }}</div>
+            {% if record.source_path %}
+                {% if (record.source_filename or '').lower().endswith('.pdf') %}
+                <iframe class="source" src="/admin/source/{{ record.id }}"></iframe>
+                {% else %}
+                <img class="source" src="/admin/source/{{ record.id }}" alt="原始发票">
+                {% endif %}
+            {% else %}
+                <div class="body">历史记录未保存原始凭证，无法预览。</div>
+            {% endif %}
+        </section>
+
+        <section class="panel">
+            <div class="panel-title">机器预审证据与人工确认</div>
+            <div class="body">
+                {% set risk = record.review.risk_level or record.risk_level or 'medium' %}
+                <div class="summary {{ risk }}">
+                    <strong>{{ record.review.message or '待人工复核' }}</strong>
+                    <div style="margin-top:6px; font-size:13px;">
+                        证据等级：{{ {'high':'高','medium':'中','low':'低'}.get(record.review.evidence_grade, record.review.evidence_grade or '-') }}
+                        · 当前状态：{{ {'pending':'待复核','auto_pass':'机器预审通过','approved':'人工已通过','rejected':'已驳回'}.get(record.review_status, record.review_status) }}
+                    </div>
+                </div>
+                <div class="notice">
+                    标准 VAT OCR 接口未提供统一字段概率。本页展示的是规则证据等级，不是模型置信度，也不代表税局验真。
+                    红色字段必须修正；黄色字段按业务需要确认。
+                </div>
+                {% if error %}<div class="error">{{ error }}</div>{% endif %}
+
+                <form method="post">
+                    <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+                    <div class="field-grid">
+                        {% set field_checks = record.review.get('field_checks', {}) %}
+                        {% for key, label in review_fields %}
+                            {% set check = field_checks.get(key, {}) %}
+                            <div class="field {{ 'error-field' if check.status == 'error' else ('warning-field' if check.status == 'warning' else '') }}">
+                                <label for="{{ key }}">{{ label }}</label>
+                                <input id="{{ key }}" name="{{ key }}" value="{{ record.data.get(key, '') }}">
+                                <div class="reason">{{ check.reason or '等待复核' }}</div>
+                            </div>
+                        {% endfor %}
+                    </div>
+                    <div style="margin-top:14px;">
+                        <label for="review_note">复核意见</label>
+                        <textarea id="review_note" name="review_note" rows="3">{{ record.review_note or '' }}</textarea>
+                    </div>
+                    <div class="actions">
+                        <button class="save" type="submit" name="action" value="save">保存修正，继续待复核</button>
+                        <button class="approve" type="submit" name="action" value="approve">确认通过</button>
+                        <button class="reject" type="submit" name="action" value="reject">驳回</button>
+                    </div>
+                </form>
+
+                <div class="events">
+                    <strong>复核轨迹</strong>
+                    {% for event in events %}
+                    <div class="event">{{ event.created_at }} · {{ event.actor }} · {{ event.action }}{% if event.detail.note %} · {{ event.detail.note }}{% endif %}</div>
+                    {% else %}
+                    <div class="event">暂无操作记录</div>
+                    {% endfor %}
+                </div>
+            </div>
+        </section>
+    </div>
+</body>
+</html>

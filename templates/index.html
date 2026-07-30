@@ -123,6 +123,16 @@
             margin: 16px 0;
             text-align: center;
         }
+        .system-status, .error-box {
+            padding: 11px 14px;
+            border-radius: 8px;
+            margin: 0 0 16px;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        .system-status.ready { background: #d1fae5; color: #065f46; }
+        .system-status.unavailable, .error-box { background: #fee2e2; color: #991b1b; }
+        .error-box { display: none; white-space: pre-line; }
         .file-list { 
             margin-top: 20px; 
             max-height: 200px; 
@@ -178,6 +188,18 @@
         .verification-status.error {
             background: #fee2e2;
             color: #991b1b;
+        }
+        .verification-status.pending {
+            background: #fef3c7;
+            color: #92400e;
+        }
+        .review-meta {
+            color: #475569;
+            background: #f8fafc;
+            border-radius: 6px;
+            padding: 8px 10px;
+            margin-bottom: 12px;
+            font-size: 13px;
         }
         .row { 
             display: grid; 
@@ -254,10 +276,18 @@
         
         <div class="header">
             <h1>🏢 财务部增值税发票智能识别系统</h1>
-            <p>支持批量图片/PDF识别 | 一键导出Excel</p>
+            <p>批量识别 · 规则分流 · 异常人工复核 · 受控导出</p>
         </div>
 
         <div class="card">
+            <div class="system-status {{ 'ready' if ocr_configured else 'unavailable' }}">
+                {% if ocr_configured %}
+                百度 VAT OCR 凭证已配置（首次识别时联网校验）。结果会经过完整性、格式、价税勾稽、重复和抽样规则分流。
+                {% else %}
+                OCR 凭证未配置，当前只能浏览历史台账，无法执行真实识别。
+                {% endif %}
+            </div>
+            <div id="errorBox" class="error-box" role="alert"></div>
             <div class="upload-box" onclick="document.getElementById('fileInput').click()">
                 <div style="font-size: 48px; margin-bottom: 16px;">📁</div>
                 <div style="font-size: 18px; color: #0f52ba; font-weight: 500; margin-bottom: 8px;">点击选择文件</div>
@@ -283,7 +313,7 @@
         </div>
         
         <div class="footer">
-            © 财务部增值税发票智能识别系统 v1.0 | 2026 年 4 月
+            © 财务部增值税发票智能识别与复核系统 v2.0 | 2026 年 7 月
         </div>
     </div>
 
@@ -292,6 +322,47 @@
         let currentResults = [];
         let processedInvoiceNums = new Set();
         let fileDataCache = new Map();
+        let isRecognizing = false;
+
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replaceAll('&', '&amp;')
+                .replaceAll('<', '&lt;')
+                .replaceAll('>', '&gt;')
+                .replaceAll('"', '&quot;')
+                .replaceAll("'", '&#039;');
+        }
+
+        function showErrors(messages) {
+            const box = document.getElementById('errorBox');
+            box.textContent = messages.join('\n');
+            box.style.display = messages.length ? 'block' : 'none';
+        }
+
+        function exportableRecordIds() {
+            return currentResults
+                .filter(item => item._record_id && ['auto_pass', 'approved'].includes(item._review?.review_status))
+                .map(item => Number(item._record_id));
+        }
+
+        function updateExportButtons() {
+            const disabled = exportableRecordIds().length === 0;
+            document.getElementById('exportExcelBtn').disabled = disabled;
+            document.getElementById('exportCSVBtn').disabled = disabled;
+        }
+
+        async function parseApiResponse(resp) {
+            let data;
+            try {
+                data = await resp.json();
+            } catch (_e) {
+                throw new Error(`服务返回了无法解析的响应（HTTP ${resp.status}）`);
+            }
+            if (!resp.ok || data.error) {
+                throw new Error(data.error || `请求失败（HTTP ${resp.status}）`);
+            }
+            return data;
+        }
 
         document.getElementById('fileInput').addEventListener('change', function(e) {
             console.log('文件选择事件触发');
@@ -334,7 +405,7 @@
             selectedFiles.forEach((file, index) => {
                 html += `
                     <div class="file-item">
-                        <span>${index + 1}. ${file.name} (${(file.size / 1024).toFixed(1)} KB)</span>
+                        <span>${index + 1}. ${escapeHtml(file.name)} (${(file.size / 1024).toFixed(1)} KB)</span>
                         <button style="background: #ef4444; color: white; border: none; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px;" onclick="removeFile(${index})">删除</button>
                     </div>
                 `;
@@ -357,62 +428,64 @@
         }
 
         async function startRecognize() {
-            console.log('开始识别');
+            if (isRecognizing) return;
             if (selectedFiles.length === 0) {
                 alert('请先选择文件');
                 return;
             }
 
+            isRecognizing = true;
             const loadingEl = document.getElementById('loading');
             const recognizeBtn = document.getElementById('recognizeBtn');
             const resultBox = document.getElementById('resultBox');
-            
+
             loadingEl.style.display = 'block';
             recognizeBtn.disabled = true;
             resultBox.innerHTML = '';
             currentResults = [];
             processedInvoiceNums = new Set();
+            const errors = [];
+            showErrors([]);
 
-            for (let i = 0; i < selectedFiles.length; i++) {
-                const file = selectedFiles[i];
-                loadingEl.innerHTML = `⌛ 正在识别第 ${i + 1}/${selectedFiles.length} 个文件: ${file.name}...`;
-                
-                const formData = new FormData();
-                formData.append('file', file);
-
-                try {
+            try {
+                for (let i = 0; i < selectedFiles.length; i++) {
+                    const file = selectedFiles[i];
+                    loadingEl.textContent = `正在识别第 ${i + 1}/${selectedFiles.length} 个文件：${file.name}`;
+                    const formData = new FormData();
+                    formData.append('file', file);
                     const resp = await fetch('/api/recognize', { 
                         method: 'POST', 
                         body: formData 
                     });
-                    const data = await resp.json();
-                    console.log('识别结果:', data);
-                    if (data.items) {
-                        data.items.forEach((item, idx) => {
+                    try {
+                        const data = await parseApiResponse(resp);
+                        (data.items || []).forEach((item, idx) => {
                             item._fileIndex = i;
                             item._fileName = file.name;
                             item._itemIndex = idx;
-                            
                             const invoiceNum = item.InvoiceNum || item.InvoiceNo;
                             if (invoiceNum) {
                                 item._isDuplicate = processedInvoiceNums.has(invoiceNum)
                                     || item._control?.status === 'duplicate';
                                 processedInvoiceNums.add(invoiceNum);
                             }
-
                             currentResults.push(item);
                         });
+                    } catch (e) {
+                        errors.push(`${file.name}：${e.message}`);
                     }
-                } catch (e) {
-                    console.error('识别失败:', e);
                 }
+            } catch (e) {
+                errors.push(`网络异常：${e.message}`);
+            } finally {
+                isRecognizing = false;
+                loadingEl.style.display = 'none';
+                recognizeBtn.disabled = false;
             }
 
+            showErrors(errors);
             renderResults();
-            loadingEl.style.display = 'none';
-            recognizeBtn.disabled = false;
-            document.getElementById('exportExcelBtn').disabled = currentResults.length === 0;
-            document.getElementById('exportCSVBtn').disabled = currentResults.length === 0;
+            updateExportButtons();
         }
 
         function renderResults() {
@@ -430,26 +503,40 @@
                     status: 'review',
                     message: '未取得后端校验结果，需要人工复核'
                 };
-                const verificationClass = control.status === 'pass' ? 'success' : 'error';
+                const review = item._review || {};
+                const verificationClass = review.review_status === 'auto_pass'
+                    ? 'success' : (control.status === 'pass' ? 'pending' : 'error');
+                const statusLabel = {
+                    auto_pass: '机器预审通过',
+                    pending: '待人工复核',
+                    approved: '人工已通过',
+                    rejected: '已驳回'
+                }[review.review_status] || '待人工复核';
                 
                 html += `
                     <div class="result-item ${duplicateClass}" id="result-${index}">
                         <h4>第 ${index + 1} 张发票</h4>
                         ${item._isDuplicate ? '<div class="duplicate-warning">⚠️ 该发票已识别过</div>' : ''}
                         <div class="verification-status ${verificationClass}">
-                            ${control.message}
+                            ${escapeHtml(review.message || control.message)}
+                        </div>
+                        <div class="review-meta">
+                            状态：${escapeHtml(statusLabel)}
+                            · 风险：${escapeHtml({high:'高',medium:'中',low:'低'}[review.risk_level] || '-')}
+                            · 证据等级：${escapeHtml({high:'高',medium:'中',low:'低'}[review.evidence_grade] || '-')}
+                            ${item._record_id ? ` · <a href="/admin/review/${Number(item._record_id)}">进入人工复核</a>` : ''}
                         </div>
                         <div class="row">
-                            <div><span class="label">发票号码：</span><span class="value">${item.InvoiceNum || item.InvoiceNo || '-'}</span></div>
-                            <div><span class="label">开票日期：</span><span class="value">${item.InvoiceDate || '-'}</span></div>
+                            <div><span class="label">发票号码：</span><span class="value">${escapeHtml(item.InvoiceNum || item.InvoiceNo || '-')}</span></div>
+                            <div><span class="label">开票日期：</span><span class="value">${escapeHtml(item.InvoiceDate || '-')}</span></div>
                         </div>
                         <div class="row">
-                            <div><span class="label">销售方名称：</span><span class="value">${item.SellerName || '-'}</span></div>
-                            <div><span class="label">购买方名称：</span><span class="value">${item.PurchaserName || '-'}</span></div>
+                            <div><span class="label">销售方名称：</span><span class="value">${escapeHtml(item.SellerName || '-')}</span></div>
+                            <div><span class="label">购买方名称：</span><span class="value">${escapeHtml(item.PurchaserName || '-')}</span></div>
                         </div>
                         <div class="row">
-                            <div><span class="label">合计金额：</span><span class="value">${item.TotalAmount || '-'}</span></div>
-                            <div><span class="label">合计税额：</span><span class="value">${item.TotalTax || '-'}</span></div>
+                            <div><span class="label">合计金额：</span><span class="value">${escapeHtml(item.TotalAmount || '-')}</span></div>
+                            <div><span class="label">合计税额：</span><span class="value">${escapeHtml(item.TotalTax || '-')}</span></div>
                         </div>
                         <div class="action-buttons">
                             <button class="btn btn-warning" onclick="reRecognize(${index})">🔄 重新识别</button>
@@ -488,8 +575,7 @@
                 });
                 
                 renderResults();
-                document.getElementById('exportExcelBtn').disabled = currentResults.length === 0;
-                document.getElementById('exportCSVBtn').disabled = currentResults.length === 0;
+                updateExportButtons();
             }
         }
 
@@ -503,7 +589,7 @@
             }
             
             const loadingEl = document.getElementById('loading');
-            loadingEl.innerHTML = `⌛ 正在重新识别第 ${index + 1} 张发票...`;
+            loadingEl.textContent = `正在重新识别第 ${index + 1} 张发票`;
             loadingEl.style.display = 'block';
             
             const formData = new FormData();
@@ -514,7 +600,7 @@
                     method: 'POST', 
                     body: formData 
                 });
-                const data = await resp.json();
+                const data = await parseApiResponse(resp);
                 
                 if (data.items && data.items.length > item._itemIndex) {
                     const newItem = data.items[item._itemIndex];
@@ -539,8 +625,7 @@
                 }
                 
             } catch (e) {
-                console.error('重新识别失败:', e);
-                alert('重新识别失败，请重试');
+                showErrors([`重新识别失败：${e.message}`]);
             }
             
             loadingEl.style.display = 'none';
@@ -557,7 +642,7 @@
                 const resp = await fetch('/api/export/excel', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ data: currentResults })
+                    body: JSON.stringify({ record_ids: exportableRecordIds() })
                 });
                 
                 if (!resp.ok) {
@@ -589,7 +674,7 @@
                 const resp = await fetch('/api/export/csv', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ data: currentResults })
+                    body: JSON.stringify({ record_ids: exportableRecordIds() })
                 });
                 
                 if (!resp.ok) {

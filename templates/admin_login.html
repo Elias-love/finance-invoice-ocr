@@ -78,13 +78,14 @@
         <div class="error">{{ error }}</div>
         {% endif %}
         <form method="post">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
             <div class="form-group">
-                <label>用户名</label>
-                <input type="text" name="username" required>
+                <label for="username">用户名</label>
+                <input id="username" type="text" name="username" autocomplete="username" required>
             </div>
             <div class="form-group">
-                <label>密码</label>
-                <input type="password" name="password" required>
+                <label for="password">密码</label>
+                <input id="password" type="password" name="password" autocomplete="current-password" required>
             </div>
             <button type="submit" class="btn">登录</button>
         </form>

@@ -1,5 +1,7 @@
 """SQLite 台账存储测试。"""
 
+from pathlib import Path
+
 import pytest
 
 import config
@@ -77,3 +79,37 @@ def test_clear(temp_db):
     storage.clear()
     assert storage.count() == 0
     assert storage.get_all() == []
+
+
+def test_clear_removes_authorized_source_files(temp_db):
+    source = storage.save_source(b"%PDF-demo", ".pdf", "abc123")
+    storage.add_record(SAMPLE, source_path=source)
+    storage.clear()
+    assert not Path(source).exists()
+
+
+def test_review_update_preserves_original_and_writes_audit(temp_db):
+    review = {
+        "review_status": "pending",
+        "risk_level": "medium",
+        "message": "待复核",
+    }
+    rid = storage.add_record(SAMPLE, review=review)
+    corrected = {**SAMPLE, "SellerName": "人工修正销售方"}
+    validation = {"status": "pass", "message": "基础校验通过"}
+    storage.update_review(
+        rid,
+        corrected_data=corrected,
+        review_status="approved",
+        reviewer="auditor",
+        note="已核对原票",
+        validation=validation,
+        review={**review, "risk_level": "low"},
+    )
+
+    record = storage.get_by_id(rid)
+    assert record["original_data"]["SellerName"] == SAMPLE["SellerName"]
+    assert record["data"]["SellerName"] == "人工修正销售方"
+    assert record["review_status"] == "approved"
+    events = storage.get_review_events(rid)
+    assert [e["action"] for e in events] == ["approved", "recognized"]

@@ -22,7 +22,7 @@ ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "") or os.urandom(24).hex()
 PORT = int(os.getenv("PORT", "5007"))
 SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "0") == "1"
-OCR_RATE_LIMIT_PER_MINUTE = int(os.getenv("OCR_RATE_LIMIT_PER_MINUTE", "10"))
+OCR_RATE_LIMIT_PER_MINUTE = int(os.getenv("OCR_RATE_LIMIT_PER_MINUTE", "60"))
 
 # 上传大小上限（字节）：默认 16MB，超出返回 413
 MAX_CONTENT_LENGTH = int(os.getenv("MAX_UPLOAD_MB", "16")) * 1024 * 1024
@@ -32,9 +32,32 @@ ALLOWED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".bmp"}
 
 # PDF 转图片的缩放倍数（越大越清晰但越慢）
 PDF_ZOOM = float(os.getenv("PDF_ZOOM", "1.5"))
+MAX_PDF_PAGES = int(os.getenv("MAX_PDF_PAGES", "30"))
+
+# —— 复核策略 ——
+# 标准 VAT OCR 接口不返回统一的字段级 probability，因此这里使用可解释的
+# 确定性证据分级，不把规则结果冒充为模型置信度。
+AUTO_PASS_ENABLED = os.getenv("AUTO_PASS_ENABLED", "1") == "1"
+HIGH_VALUE_REVIEW_AMOUNT = os.getenv("HIGH_VALUE_REVIEW_AMOUNT", "100000")
+REVIEW_SAMPLE_RATE = float(os.getenv("REVIEW_SAMPLE_RATE", "0.05"))
+ALLOW_AUTO_PASS_EXPORT = os.getenv("ALLOW_AUTO_PASS_EXPORT", "1") == "1"
 
 # —— 导出字段（单一来源，避免多处重复定义）——
 EXPORT_FIELDS = ["InvoiceNum", "InvoiceDate", "PurchaserName",
                  "SellerName", "TotalAmount", "TotalTax"]
 EXPORT_FIELD_NAMES = ["发票号码", "开票日期", "购买方名称",
                       "销售方名称", "合计金额", "合计税额"]
+
+REVIEW_FIELDS = [
+    ("InvoiceTypeOrg", "发票名称"),
+    ("InvoiceCode", "发票代码"),
+    ("InvoiceNum", "发票号码"),
+    ("InvoiceDate", "开票日期"),
+    ("PurchaserName", "购买方名称"),
+    ("PurchaserRegisterNum", "购买方税号"),
+    ("SellerName", "销售方名称"),
+    ("SellerRegisterNum", "销售方税号"),
+    ("TotalAmount", "合计金额"),
+    ("TotalTax", "合计税额"),
+    ("AmountInFiguers", "价税合计（小写）"),
+]

@@ -62,6 +62,10 @@ def assess_review(
     qr = data.get("_qr") or {}
     detail = control.get("checks", {}).get("detail_reconciliation", {})
     detail_integrity = detail.get("status", "unavailable")
+    verification_scope = control.get(
+        "verification_scope",
+        detail.get("verification_scope", "header"),
+    )
     if detail_integrity == "partial" and not detail_reasons:
         detail_reasons.append("明细OCR字段不完整，无法完成汇总校验")
 
@@ -206,7 +210,7 @@ def assess_review(
         ),
     }[review_status]
     return {
-        "policy_version": "3.2",
+        "policy_version": "3.3",
         "review_status": review_status,
         # risk_level 保留给旧数据库/接口，语义调整为“业务风险”。
         "risk_level": business_risk_level,
@@ -214,6 +218,7 @@ def assess_review(
         "processing_priority": processing_priority,
         "evidence_grade": evidence_grade,
         "evidence_completeness": evidence_completeness,
+        "verification_scope": verification_scope,
         "detail_integrity": detail_integrity,
         "confidence_type": "deterministic_controls",
         "confidence_score": None,
@@ -252,7 +257,11 @@ def assess_review(
             },
             "detail_integrity": {
                 "status": detail_integrity,
-                "label": "明细OCR完整性",
+                "label": (
+                    "明细OCR完整性"
+                    if verification_scope == "detail"
+                    else "明细核验（票头模式不要求）"
+                ),
                 "detail": detail,
             },
             "tax_authenticity": {

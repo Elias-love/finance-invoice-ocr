@@ -131,7 +131,7 @@
                                 {{ {'high':'高','medium':'中','low':'低'}.get(business_risk, '-') }}
                             </td>
                             <td>{{ {'high':'高','medium':'中','normal':'常规'}.get(priority, priority) }}</td>
-                            <td>{{ {'pass':'一致','incomplete':'疑似漏行','partial':'部分证据','unavailable':'未取得'}.get(detail_status, detail_status) }}</td>
+                            <td>{{ {'pass':'一致','incomplete':'疑似漏行','partial':'部分证据','not_required':'票头模式不要求','unavailable':'未取得'}.get(detail_status, detail_status) }}</td>
                             <td>{{ d.InvoiceNum or d.InvoiceNo or '-' }}</td>
                             <td>{{ d.PurchaserName or '-' }}</td>
                             <td>{{ d.SellerName or '-' }}</td>

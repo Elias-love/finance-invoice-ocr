@@ -90,6 +90,7 @@ def test_detail_ocr_gap_is_not_invoice_business_risk(monkeypatch):
     monkeypatch.setattr(config, "REQUIRE_QR_FOR_AUTO_PASS", False)
     data = {
         **VALID,
+        "_verification_scope": "detail",
         "CommodityAmount": [{"row": "1", "word": "900.00"}],
         "CommodityTax": [{"row": "1", "word": "117.00"}],
         "CommodityTaxRate": [{"row": "1", "word": "13%"}],
@@ -102,6 +103,23 @@ def test_detail_ocr_gap_is_not_invoice_business_risk(monkeypatch):
     assert review["processing_priority"] == "medium"
     assert review["detail_integrity"] == "incomplete"
     assert review["evidence_completeness"] == "partial"
+
+
+def test_header_scope_ignores_partial_page_detail_for_risk(monkeypatch):
+    monkeypatch.setattr(config, "REQUIRE_QR_FOR_AUTO_PASS", False)
+    monkeypatch.setattr(config, "REVIEW_SAMPLE_RATE", 0)
+    data = {
+        **VALID,
+        "_verification_scope": "header",
+        "CommodityAmount": [{"row": "1", "word": "900.00"}],
+        "CommodityTax": [{"row": "1", "word": "117.00"}],
+    }
+    review = assess_review(data, validate_invoice(data))
+    assert review["review_status"] == "auto_pass"
+    assert review["business_risk_level"] == "low"
+    assert review["processing_priority"] == "normal"
+    assert review["evidence_completeness"] == "complete"
+    assert review["detail_integrity"] == "not_required"
 
 
 def test_missing_qr_is_evidence_gap_not_invoice_risk():

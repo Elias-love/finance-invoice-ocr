@@ -61,7 +61,7 @@ def create_app() -> Flask:
                 record["id"], validation=control, review=review
             )
         elif (
-            record["review"].get("policy_version") != "3.2"
+            record["review"].get("policy_version") != "3.3"
             and record.get("source_path")
         ):
             # 旧记录无需再次付费 OCR：从已保存原票重算图像质量和二维码证据。
@@ -368,6 +368,18 @@ def _register_routes(app: Flask):
             for evidence_key in ("_quality", "_qr"):
                 if evidence_key in record["data"]:
                     corrected[evidence_key] = record["data"][evidence_key]
+            verification_scope = request.form.get(
+                "verification_scope",
+                record["data"].get(
+                    "_verification_scope",
+                    record["review"].get("verification_scope", "header"),
+                ),
+            )
+            corrected["_verification_scope"] = (
+                verification_scope
+                if verification_scope in {"header", "detail"}
+                else "header"
+            )
 
             control = validate_invoice(corrected)
             review = assess_review(
@@ -530,6 +542,11 @@ def _register_routes(app: Flask):
         file = request.files["file"]
         if not file.filename:
             return jsonify({"items": [], "error": "文件名为空"}), 400
+        verification_scope = request.form.get(
+            "verification_scope", "header"
+        ).strip().lower()
+        if verification_scope not in {"header", "detail"}:
+            return jsonify({"items": [], "error": "不支持的核验口径"}), 400
 
         import os
         ext = os.path.splitext(file.filename)[1].lower()
@@ -597,6 +614,7 @@ def _register_routes(app: Flask):
                 source_page = int(
                     invoice_data.pop("_source_page", result_position)
                 )
+                invoice_data["_verification_scope"] = verification_scope
                 control = validate_invoice(invoice_data)
                 invoice_num = field(invoice_data, "InvoiceNum").strip()
                 duplicate = bool(
@@ -674,6 +692,11 @@ def _register_routes(app: Flask):
                 page_number,
             )
             invoice_data.pop("_source_page", None)
+            invoice_data["_verification_scope"] = (
+                record["data"].get("_verification_scope")
+                or record["review"].get("verification_scope")
+                or "header"
+            )
             control = validate_invoice(invoice_data)
             current_batch = [
                 item for item in storage.get_by_ids(

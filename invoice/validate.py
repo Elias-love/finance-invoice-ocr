@@ -155,6 +155,11 @@ def validate_invoice(data: dict) -> dict:
     """返回可审计的控制结果：pass/review + errors/warnings。"""
     errors = []
     warnings = []
+    verification_scope = str(
+        data.get("_verification_scope") or "header"
+    ).strip().lower()
+    if verification_scope not in {"header", "detail"}:
+        verification_scope = "header"
 
     for key, label in REQUIRED_FIELDS.items():
         if not field(data, key).strip():
@@ -196,31 +201,39 @@ def validate_invoice(data: dict) -> dict:
         None if line_tax is None or tax is None
         else abs(line_tax - tax) <= tolerance
     )
-    detail_issues: list[str] = []
+    observed_detail_issues: list[str] = []
     if line_amount is not None and amount is not None:
         if not line_amount_ok:
-            detail_issues.append(
+            observed_detail_issues.append(
                 "明细OCR提取可能不完整：金额汇总与票头合计不一致"
             )
     if line_tax is not None and tax is not None:
         if not line_tax_ok:
-            detail_issues.append(
+            observed_detail_issues.append(
                 "明细OCR提取可能不完整：税额汇总与票头合计不一致"
             )
-    detail_issues.extend(_validate_line_tax(data, tolerance))
+    observed_detail_issues.extend(_validate_line_tax(data, tolerance))
 
     detail_lists_present = any(
         _line_values(data, key)
         for key in ("CommodityName", "CommodityAmount", "CommodityTax")
     )
-    if detail_issues:
-        detail_status = "incomplete"
+    if observed_detail_issues:
+        observed_detail_status = "incomplete"
     elif detail_lists_present and line_amount_ok is True and line_tax_ok is True:
-        detail_status = "pass"
+        observed_detail_status = "pass"
     elif detail_lists_present:
-        detail_status = "partial"
+        observed_detail_status = "partial"
     else:
-        detail_status = "unavailable"
+        observed_detail_status = "unavailable"
+    if verification_scope == "detail":
+        detail_status = observed_detail_status
+        detail_issues = observed_detail_issues
+    else:
+        # 票头模式只核验入账所需票头字段。多页发票只上传其中一页时，
+        # 本页明细天然不等于整票合计，不能据此判定发票异常。
+        detail_status = "not_required"
+        detail_issues = []
     detail_rows = max(
         (
             len(_line_values(data, key))
@@ -297,6 +310,9 @@ def validate_invoice(data: dict) -> dict:
             ),
             "detail_reconciliation": {
                 "status": detail_status,
+                "observed_status": observed_detail_status,
+                "verification_scope": verification_scope,
+                "required": verification_scope == "detail",
                 "extracted_rows": detail_rows,
                 "extracted_amount": _money_text(line_amount),
                 "header_amount": _money_text(amount),
@@ -313,11 +329,18 @@ def validate_invoice(data: dict) -> dict:
                     else None
                 ),
                 "issues": detail_issues,
+                "observed_issues": observed_detail_issues,
             },
         },
+        "verification_scope": verification_scope,
         "detail_issues": detail_issues,
         "message": (
-            "基础校验通过（非税局真伪查验）"
+            (
+                "票头必要字段校验通过"
+                "（明细不参与判定；非税局真伪查验）"
+                if verification_scope == "header"
+                else "基础校验通过（非税局真伪查验）"
+            )
             if not errors and not detail_issues
             else (
                 "票头基础校验通过；明细OCR完整性需要复核"

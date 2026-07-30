@@ -67,8 +67,21 @@ def test_line_sum_and_tax_rate_reconciliation():
     assert result["checks"]["line_amount_reconciliation"] is True
     assert result["checks"]["line_tax_reconciliation"] is True
 
+    header_only = validate_invoice({
+        **VALID,
+        "CommodityAmount": [{"row": "1", "word": "900.00"}],
+        "CommodityTax": [{"row": "1", "word": "117.00"}],
+        "CommodityTaxRate": [{"row": "1", "word": "13%"}],
+    })
+    assert header_only["status"] == "pass"
+    header_detail = header_only["checks"]["detail_reconciliation"]
+    assert header_detail["status"] == "not_required"
+    assert header_detail["observed_status"] == "incomplete"
+    assert header_only["detail_issues"] == []
+
     mismatch = validate_invoice({
         **VALID,
+        "_verification_scope": "detail",
         "CommodityAmount": [{"row": "1", "word": "900.00"}],
         "CommodityTax": [{"row": "1", "word": "117.00"}],
         "CommodityTaxRate": [{"row": "1", "word": "13%"}],
@@ -80,6 +93,18 @@ def test_line_sum_and_tax_rate_reconciliation():
     assert detail["amount_difference"] == "100.00"
     assert detail["tax_difference"] == "13.00"
     assert any("明细OCR" in issue for issue in mismatch["detail_issues"])
+
+
+def test_header_scope_is_default_for_single_page_of_multi_page_invoice():
+    result = validate_invoice({
+        **VALID,
+        "CommodityAmount": [{"row": "1", "word": "88.00"}],
+        "CommodityTax": [{"row": "1", "word": "11.44"}],
+    })
+    assert result["verification_scope"] == "header"
+    assert result["checks"]["detail_reconciliation"]["required"] is False
+    assert result["checks"]["detail_reconciliation"]["status"] == "not_required"
+    assert "票头必要字段校验通过" in result["message"]
 
 
 def test_coherent_red_invoice_is_supported():

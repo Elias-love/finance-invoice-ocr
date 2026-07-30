@@ -23,7 +23,7 @@
         .evidence-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 9px; margin-bottom: 16px; }
         .evidence-card { border: 1px solid #dbe3ec; border-radius: 8px; padding: 10px 12px; font-size: 12px; color: #475569; }
         .evidence-card strong { display: block; color: #1e293b; margin-bottom: 4px; }
-        .evidence-card.pass, .evidence-card.verified, .evidence-card.completed { border-color: #10b981; background: #f0fdf4; }
+        .evidence-card.pass, .evidence-card.verified, .evidence-card.completed, .evidence-card.not_required { border-color: #10b981; background: #f0fdf4; }
         .evidence-card.error, .evidence-card.mismatch, .evidence-card.review { border-color: #ef4444; background: #fff7f7; }
         .evidence-card.warning, .evidence-card.partial, .evidence-card.incomplete, .evidence-card.unavailable, .evidence-card.not_connected { border-color: #f59e0b; background: #fffbeb; }
         .detail-review { border: 1px solid #f59e0b; background: #fffbeb; border-radius: 8px; padding: 12px; margin-bottom: 16px; color: #78350f; }
@@ -37,7 +37,7 @@
         .field.error-field { border-color: #ef4444; background: #fff7f7; }
         .field.warning-field { border-color: #f59e0b; background: #fffbeb; }
         label { display: block; color: #475569; font-size: 13px; margin-bottom: 6px; font-weight: 600; }
-        input, textarea { width: 100%; border: 1px solid #cbd5e1; border-radius: 6px; padding: 9px 10px; font-size: 14px; }
+        input, textarea, select { width: 100%; border: 1px solid #cbd5e1; border-radius: 6px; padding: 9px 10px; font-size: 14px; background: white; }
         .reason { font-size: 12px; margin-top: 6px; color: #64748b; }
         .original { font-size: 12px; margin-top: 5px; color: #b45309; word-break: break-all; }
         .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
@@ -98,6 +98,11 @@
                 <div class="notice">
                     本页把 OCR、图像质量、二维码和业务规则分开展示。规则证据不是模型置信度；
                     税务验真按当前范围暂不接入。红色字段必须修正，黄色字段需要确认。
+                    当前核验口径：{{
+                        '完整明细核验'
+                        if record.review.verification_scope == 'detail'
+                        else '票头必要字段（明细不参与判定）'
+                    }}。
                 </div>
                 {% set channels = record.review.get('evidence_channels', {}) %}
                 {% set channel_labels = {
@@ -126,7 +131,7 @@
                                 {% if channel.matches %} · 一致：{{ channel.matches|join('、') }}{% endif %}
                                 {% if channel.mismatches %} · 冲突：{{ channel.mismatches|join('、') }}{% endif %}
                             {% elif key == 'detail_integrity' %}
-                                {{ {'pass':'汇总一致','incomplete':'可能漏行/合并行','partial':'证据不完整','unavailable':'未取得明细证据'}.get(channel.status, channel.status or 'unavailable') }}
+                                {{ {'pass':'汇总一致','incomplete':'可能漏行/合并行','partial':'证据不完整','not_required':'票头模式不要求','unavailable':'未取得明细证据'}.get(channel.status, channel.status or 'unavailable') }}
                             {% elif key == 'tax_authenticity' %}
                                 暂未接入，不参与自动通过判断
                             {% else %}
@@ -153,6 +158,14 @@
 
                 <form method="post">
                     <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+                    <div style="margin-bottom:14px;">
+                        <label for="verification_scope">核验口径</label>
+                        <select id="verification_scope" name="verification_scope">
+                            <option value="header" {{ 'selected' if record.review.verification_scope != 'detail' else '' }}>票头必要字段（适合多页发票单页上传）</option>
+                            <option value="detail" {{ 'selected' if record.review.verification_scope == 'detail' else '' }}>完整明细核验</option>
+                        </select>
+                        <div class="reason">切换后保存，系统会按所选口径重新计算预审结果。</div>
+                    </div>
                     <div class="field-grid">
                         {% set field_checks = record.review.get('field_checks', {}) %}
                         {% for key, label in review_fields %}

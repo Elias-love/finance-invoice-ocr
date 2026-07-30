@@ -206,7 +206,11 @@ def test_recognize_stores_record_in_current_batch(tmp_path, monkeypatch):
         headers={"X-CSRF-Token": "csrf-test"},
     )
     assert response.status_code == 200
-    record_id = response.get_json()["items"][0]["_record_id"]
+    response_item = response.get_json()["items"][0]
+    record_id = response_item["_record_id"]
+    assert response_item["_control"]["verification_scope"] == "header"
+    assert response_item["_review"]["detail_integrity"] == "not_required"
+    assert storage.get_by_id(record_id)["data"]["_verification_scope"] == "header"
     with client.session_transaction() as sess:
         assert sess["current_batch_ids"] == [record_id]
     assert "24442000000000000888" in client.get("/").get_data(as_text=True)
@@ -460,6 +464,7 @@ def test_human_can_override_detail_mismatch_with_mandatory_note(
         "TotalAmount": "100.00",
         "TotalTax": "13.00",
         "AmountInFiguers": "113.00",
+        "_verification_scope": "detail",
         "CommodityAmount": [{"row": "1", "word": "90.00"}],
         "CommodityTax": [{"row": "1", "word": "11.70"}],
         "CommodityTaxRate": [{"row": "1", "word": "13%"}],
@@ -475,6 +480,7 @@ def test_human_can_override_detail_mismatch_with_mandatory_note(
     form = {
         "_csrf_token": "csrf-test",
         "action": "approve",
+        "verification_scope": "detail",
         **{key: data.get(key, "") for key, _ in config.REVIEW_FIELDS},
     }
     denied = client.post(f"/admin/review/{rid}", data=form)

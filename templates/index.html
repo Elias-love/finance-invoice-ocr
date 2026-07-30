@@ -308,6 +308,19 @@
             <input type="file" id="fileInput" multiple accept=".jpg,.jpeg,.png,.pdf" style="display: none;">
             
             <div id="fileList" class="file-list"></div>
+
+            <div style="max-width: 760px; margin: 0 auto 18px; text-align: left;">
+                <label for="verificationScope" style="display:block; color:#334155; font-weight:600; margin-bottom:6px;">
+                    核验口径
+                </label>
+                <select id="verificationScope" style="width:100%; padding:11px 12px; border:1px solid #cbd5e1; border-radius:8px; background:white; color:#0f172a;">
+                    <option value="header" selected>票头必要字段（推荐；适合多页发票只上传其中一页）</option>
+                    <option value="detail">完整明细核验（需提供包含全部明细的完整发票）</option>
+                </select>
+                <div style="font-size:13px; color:#64748b; margin-top:6px;">
+                    票头模式仍核验发票号、日期、购销方、合计金额、合计税额、价税勾稽和二维码；商品明细不参与风险判定。
+                </div>
+            </div>
             
             <div style="text-align: center; display: flex; gap: 12px; justify-content: center; flex-wrap: wrap;">
                 <button class="btn btn-warning" id="clearBtn" onclick="clearAllFiles()">清空待上传文件</button>
@@ -332,7 +345,7 @@
         </div>
         
         <div class="footer">
-            © 财务部增值税发票智能识别与复核系统 v3.1 | 2026 年 7 月
+            © 财务部增值税发票智能识别与复核系统 v3.2 | 2026 年 7 月
         </div>
     </div>
 
@@ -482,6 +495,10 @@
                     loadingEl.textContent = `正在识别第 ${i + 1}/${filesToProcess.length} 个文件：${file.name}`;
                     const formData = new FormData();
                     formData.append('file', file);
+                    formData.append(
+                        'verification_scope',
+                        document.getElementById('verificationScope').value
+                    );
                     if (!retryOnly && i === 0) {
                         formData.append('batch_action', 'reset');
                     }
@@ -571,6 +588,7 @@
                     pass: '明细OCR汇总一致',
                     incomplete: '明细OCR可能漏行',
                     partial: '明细OCR证据不完整',
+                    not_required: '票头模式：明细不参与判定',
                     unavailable: '未取得明细汇总证据'
                 }[detailStatus] || detailStatus;
                 const detailAlert = detailStatus === 'incomplete' ? `

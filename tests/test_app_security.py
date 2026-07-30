@@ -214,6 +214,10 @@ def test_recognize_stores_record_in_current_batch(tmp_path, monkeypatch):
     with client.session_transaction() as sess:
         assert sess["current_batch_ids"] == [record_id]
     assert "24442000000000000888" in client.get("/").get_data(as_text=True)
+    home_body = client.get("/").get_data(as_text=True)
+    assert "正在重新识别，请稍候" in home_body
+    assert "重新识别完成" in home_body
+    assert "原始识别结果和审计轨迹会保留" in home_body
 
 
 def test_duplicate_check_ignores_history_but_flags_current_batch(

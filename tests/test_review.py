@@ -84,6 +84,8 @@ def test_high_value_invoice_requires_review(monkeypatch):
     assert review["business_risk_level"] == "low"
     assert review["processing_priority"] == "medium"
     assert review["evidence_completeness"] == "complete"
+    assert review["routing_type"] == "policy_review"
+    assert "非识别异常" in review["message"]
 
 
 def test_detail_ocr_gap_is_not_invoice_business_risk(monkeypatch):
@@ -157,3 +159,20 @@ def test_sampling_key_is_per_invoice_page(monkeypatch):
     assert captured == [
         "same-file|7|24442000000000000001"
     ]
+
+
+def test_sample_review_is_explained_as_quality_control(monkeypatch):
+    monkeypatch.setattr(config, "REQUIRE_QR_FOR_AUTO_PASS", False)
+    monkeypatch.setattr(config, "REVIEW_SAMPLE_RATE", 0.05)
+    monkeypatch.setattr(review_module, "_sampled", lambda *_: True)
+    review = assess_review(
+        VALID,
+        validate_invoice(VALID),
+        source_sha256="sampled",
+    )
+    assert review["review_status"] == "pending"
+    assert review["routing_type"] == "sample_review"
+    assert review["business_risk_level"] == "low"
+    assert review["evidence_completeness"] == "complete"
+    assert "5%" in review["message"]
+    assert "非异常" in review["message"]

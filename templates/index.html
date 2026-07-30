@@ -145,6 +145,27 @@
         .system-status.ready { background: #d1fae5; color: #065f46; }
         .system-status.unavailable, .error-box { background: #fee2e2; color: #991b1b; }
         .error-box { display: none; white-space: pre-line; }
+        .toast {
+            position: fixed;
+            right: 22px;
+            top: 22px;
+            z-index: 9999;
+            max-width: min(420px, calc(100vw - 32px));
+            padding: 13px 16px;
+            border-radius: 9px;
+            box-shadow: 0 8px 24px rgba(15, 23, 42, .18);
+            color: white;
+            font-size: 14px;
+            line-height: 1.5;
+            opacity: 0;
+            transform: translateY(-10px);
+            pointer-events: none;
+            transition: opacity .2s, transform .2s;
+        }
+        .toast.show { opacity: 1; transform: translateY(0); }
+        .toast.info { background: #1d4ed8; }
+        .toast.success { background: #047857; }
+        .toast.error { background: #b91c1c; }
         .file-list { 
             margin-top: 20px; 
             max-height: 200px; 
@@ -281,6 +302,7 @@
     </style>
 </head>
 <body>
+    <div id="operationToast" class="toast info" role="status" aria-live="polite"></div>
     <div class="container">
         <div class="admin-link">
             <a href="/admin">🔐 管理员入口</a>
@@ -357,6 +379,7 @@
         let fileDataCache = new Map();
         let isRecognizing = false;
         let failedFiles = [];
+        let toastTimer = null;
 
         function escapeHtml(value) {
             return String(value ?? '')
@@ -371,6 +394,16 @@
             const box = document.getElementById('errorBox');
             box.textContent = messages.join('\n');
             box.style.display = messages.length ? 'block' : 'none';
+        }
+
+        function showToast(message, type = 'info', duration = 4200) {
+            const toast = document.getElementById('operationToast');
+            clearTimeout(toastTimer);
+            toast.textContent = message;
+            toast.className = `toast ${type} show`;
+            toastTimer = setTimeout(() => {
+                toast.classList.remove('show');
+            }, duration);
         }
 
         function exportableRecordIds() {
@@ -637,7 +670,7 @@
                             <div><span class="label">合计税额：</span><span class="value">${escapeHtml(item.TotalTax || '-')}</span></div>
                         </div>
                         <div class="action-buttons">
-                            <button class="btn btn-warning" onclick="reRecognize(${index})">🔄 重新识别</button>
+                            <button class="btn btn-warning" onclick="reRecognize(${index}, this)">🔄 重新识别</button>
                             <button class="btn btn-danger" onclick="deleteResult(${index})">🗑️ 删除</button>
                         </div>
                     </div>
@@ -716,16 +749,27 @@
             }
         }
 
-        async function reRecognize(index) {
+        async function reRecognize(index, button) {
             const item = currentResults[index];
             if (!item?._record_id) {
                 alert('该记录尚未保存，无法执行单页重识别');
+                return;
+            }
+            if (!confirm(
+                `确定重新识别第 ${index + 1} 张发票吗？\n` +
+                '该操作会再次调用百度 OCR；原始识别结果和审计轨迹会保留。'
+            )) {
                 return;
             }
             
             const loadingEl = document.getElementById('loading');
             loadingEl.textContent = `正在重新识别第 ${index + 1} 张发票`;
             loadingEl.style.display = 'block';
+            if (button) {
+                button.disabled = true;
+                button.textContent = '⏳ 重新识别中…';
+            }
+            showToast(`第 ${index + 1} 张发票正在重新识别，请稍候…`, 'info', 12000);
             
             try {
                 const resp = await fetch(`/api/records/${Number(item._record_id)}/rerun`, {
@@ -746,9 +790,26 @@
                     );
                     renderResults();
                     updateExportButtons();
+                    const completedStatus = {
+                        auto_pass: '机器预审通过',
+                        pending: '待人工复核',
+                        approved: '人工已通过',
+                        rejected: '已驳回'
+                    }[newItem._review?.review_status] || '结果已更新';
+                    showToast(
+                        `第 ${index + 1} 张发票重新识别完成：${completedStatus}`,
+                        'success'
+                    );
+                } else {
+                    throw new Error('服务未返回更新后的识别结果');
                 }
             } catch (e) {
                 showErrors([`重新识别失败：${e.message}`]);
+                showToast(`第 ${index + 1} 张发票重新识别失败：${e.message}`, 'error', 7000);
+                if (button) {
+                    button.disabled = false;
+                    button.textContent = '🔄 重新识别';
+                }
             }
             
             loadingEl.style.display = 'none';

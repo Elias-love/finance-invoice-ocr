@@ -61,7 +61,7 @@ def create_app() -> Flask:
                 record["id"], validation=control, review=review
             )
         elif (
-            record["review"].get("policy_version") != "3.3"
+            record["review"].get("policy_version") != "3.4"
             and record.get("source_path")
         ):
             # 旧记录无需再次付费 OCR：从已保存原票重算图像质量和二维码证据。

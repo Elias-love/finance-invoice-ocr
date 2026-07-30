@@ -198,20 +198,42 @@ def assess_review(
         + evidence_gaps
         + policy_reasons
     )
+    has_exception = bool(
+        business_reasons
+        or business_warnings
+        or detail_reasons
+        or evidence_gaps
+    )
     review_status = (
         "pending"
         if reasons or not config.AUTO_PASS_ENABLED
         else "auto_pass"
     )
-    message = {
-        "auto_pass": "机器预审通过，可直接流转并按策略抽样质检",
-        "pending": "需要人工复核：" + (
+    if review_status == "auto_pass":
+        routing_type = "auto_pass"
+        message = "机器预审通过，可直接流转并按策略抽样质检"
+    elif not has_exception and sampled:
+        routing_type = "sample_review"
+        message = (
+            "抽样质检：本票规则校验已通过，按 "
+            f"{config.REVIEW_SAMPLE_RATE:.0%} 策略进入人工质检（非异常）"
+        )
+    elif not has_exception and policy_reasons:
+        routing_type = "policy_review"
+        message = (
+            "大额审批复核：本票规则校验已通过；"
+            + "；".join(policy_reasons)
+            + "（非识别异常）"
+        )
+    else:
+        routing_type = "exception"
+        message = "需要人工复核：" + (
             "；".join(reasons) if reasons else "自动通过未启用"
-        ),
-    }[review_status]
+        )
     return {
-        "policy_version": "3.3",
+        "policy_version": "3.4",
         "review_status": review_status,
+        "routing_type": routing_type,
         # risk_level 保留给旧数据库/接口，语义调整为“业务风险”。
         "risk_level": business_risk_level,
         "business_risk_level": business_risk_level,

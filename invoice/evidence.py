@@ -201,11 +201,19 @@ def _normalize_money(value: str) -> Decimal | None:
 def compare_qr_with_ocr(qr: dict, data: dict) -> dict:
     """将二维码与 OCR 做独立通道交叉核对。"""
     if not qr.get("decoded"):
-        return {**qr, "matches": [], "mismatches": []}
+        return {
+            **qr,
+            "matches": [],
+            "mismatches": [],
+            "field_matches": [],
+            "field_mismatches": [],
+        }
 
     fields = qr.get("fields") or {}
     matches: list[str] = []
     mismatches: list[str] = []
+    field_matches: list[str] = []
+    field_mismatches: list[str] = []
     labels = {
         "InvoiceNum": "发票号码",
         "InvoiceDate": "开票日期",
@@ -228,10 +236,20 @@ def compare_qr_with_ocr(qr: dict, data: dict) -> dict:
                 (right is not None and left == right)
                 or (grand_total is not None and left == grand_total)
             )
+            if equal:
+                if right is not None and left == right:
+                    field_matches.append("TotalAmount")
+                if grand_total is not None and left == grand_total:
+                    field_matches.append("AmountInFiguers")
+            else:
+                field_mismatches.extend(["TotalAmount", "AmountInFiguers"])
         else:
             equal = re.sub(r"\s+", "", qr_value).upper() == re.sub(
                 r"\s+", "", ocr_value
             ).upper()
+        if key != "TotalAmount":
+            target_fields = field_matches if equal else field_mismatches
+            target_fields.append(key)
         target = matches if equal else mismatches
         target.append(labels[key])
 
@@ -243,6 +261,8 @@ def compare_qr_with_ocr(qr: dict, data: dict) -> dict:
         ),
         "matches": matches,
         "mismatches": mismatches,
+        "field_matches": list(dict.fromkeys(field_matches)),
+        "field_mismatches": list(dict.fromkeys(field_mismatches)),
         "message": (
             "二维码与 OCR 关键字段一致"
             if verified

@@ -30,6 +30,10 @@ def test_parse_and_compare_new_einvoice_qr_grand_total():
     )
     assert compared["status"] == "verified"
     assert compared["mismatches"] == []
+    assert "InvoiceNum" in compared["field_matches"]
+    assert "InvoiceDate" in compared["field_matches"]
+    assert "AmountInFiguers" in compared["field_matches"]
+    assert "TotalAmount" not in compared["field_matches"]
 
 
 def test_qr_digit_conflict_is_hard_mismatch():
@@ -50,6 +54,7 @@ def test_qr_digit_conflict_is_hard_mismatch():
     )
     assert compared["status"] == "mismatch"
     assert "发票号码" in compared["mismatches"]
+    assert "InvoiceNum" in compared["field_mismatches"]
 
 
 def test_low_resolution_image_fails_quality_gate():

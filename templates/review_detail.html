@@ -40,6 +40,12 @@
         input, textarea, select { width: 100%; border: 1px solid #cbd5e1; border-radius: 6px; padding: 9px 10px; font-size: 14px; background: white; }
         .reason { font-size: 12px; margin-top: 6px; color: #64748b; }
         .original { font-size: 12px; margin-top: 5px; color: #b45309; word-break: break-all; }
+        .reliability-overview { background: #f8fafc; border: 1px solid #dbe3ec; border-radius: 8px; padding: 10px 12px; margin-bottom: 16px; font-size: 13px; color: #475569; }
+        .reliability-badge { display: inline-block; margin-left: 6px; padding: 2px 7px; border-radius: 999px; font-size: 11px; font-weight: 650; }
+        .reliability-high { background: #d1fae5; color: #047857; }
+        .reliability-medium { background: #fef3c7; color: #92400e; }
+        .reliability-low { background: #fee2e2; color: #b91c1c; }
+        .reliability-reason { font-size: 12px; margin-top: 5px; color: #0f766e; }
         .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
         button { border: 0; border-radius: 8px; padding: 11px 18px; color: white; font-weight: 650; cursor: pointer; }
         .save { background: #475569; }
@@ -103,6 +109,14 @@
                         if record.review.verification_scope == 'detail'
                         else '票头必要字段（明细不参与判定）'
                     }}。
+                </div>
+                {% set reliability_summary = record.review.get('field_reliability_summary', {}) %}
+                <div class="reliability-overview">
+                    <strong>字段可靠性：</strong>
+                    高 {{ reliability_summary.get('high', 0) }} 项 ·
+                    中 {{ reliability_summary.get('medium', 0) }} 项 ·
+                    低 {{ reliability_summary.get('low', 0) }} 项。
+                    这是基于二维码、辅助校验、价税勾稽、校验位和图像质量的证据等级，不是模型原生概率。
                 </div>
                 {% set channels = record.review.get('evidence_channels', {}) %}
                 {% set channel_labels = {
@@ -168,12 +182,24 @@
                     </div>
                     <div class="field-grid">
                         {% set field_checks = record.review.get('field_checks', {}) %}
+                        {% set field_reliability = record.review.get('field_reliability', {}) %}
                         {% for key, label in review_fields %}
                             {% set check = field_checks.get(key, {}) %}
+                            {% set reliability = field_reliability.get(key, {}) %}
                             <div class="field {{ 'error-field' if check.status == 'error' else ('warning-field' if check.status == 'warning' else '') }}">
-                                <label for="{{ key }}">{{ label }}</label>
+                                <label for="{{ key }}">
+                                    {{ label }}
+                                    {% if reliability.level %}
+                                    <span class="reliability-badge reliability-{{ reliability.level }}">
+                                        可靠性{{ {'high':'高','medium':'中','low':'低'}.get(reliability.level, '-') }}
+                                    </span>
+                                    {% endif %}
+                                </label>
                                 <input id="{{ key }}" name="{{ key }}" value="{{ record.data.get(key, '') }}">
                                 <div class="reason">{{ check.reason or '等待复核' }}</div>
+                                {% if reliability.reasons %}
+                                <div class="reliability-reason">可靠性依据：{{ reliability.reasons|join('；') }}</div>
+                                {% endif %}
                                 {% if record.original_data.get(key, '') != record.data.get(key, '') %}
                                 <div class="original">OCR 原值：{{ record.original_data.get(key, '') or '空' }}</div>
                                 {% endif %}

@@ -13,6 +13,7 @@ from decimal import Decimal, InvalidOperation
 
 import config
 from invoice.extract import field
+from invoice.validate import valid_uscc
 
 
 FIELD_LABELS = dict(config.REVIEW_FIELDS)
@@ -41,6 +42,130 @@ def _sampled(sample_key: str, rate: float) -> bool:
         return True
     bucket = int(hashlib.sha256(sample_key.encode()).hexdigest()[:8], 16)
     return bucket / 0xFFFFFFFF < rate
+
+
+def _field_reliability(
+    data: dict,
+    checks: dict[str, dict],
+    control: dict,
+    quality: dict,
+    qr: dict,
+) -> dict[str, dict]:
+    """按字段汇总可解释证据；等级不是模型原生概率。"""
+    header_ok = control.get("checks", {}).get("header_reconciliation") is True
+    uppercase_ok = (
+        control.get("checks", {}).get("uppercase_amount_reconciliation") is True
+    )
+    qr_matches = set(qr.get("field_matches", []))
+    qr_mismatches = set(qr.get("field_mismatches", []))
+    quality_status = quality.get("status", "unavailable")
+    control_errors = list(control.get("errors", []))
+    control_warnings = list(control.get("warnings", []))
+
+    # 兼容升级前未记录字段键的二维码证据。
+    label_matches = set(qr.get("matches", []))
+    label_mismatches = set(qr.get("mismatches", []))
+    if "发票号码" in label_matches:
+        qr_matches.add("InvoiceNum")
+    if "开票日期" in label_matches:
+        qr_matches.add("InvoiceDate")
+    if "发票号码" in label_mismatches:
+        qr_mismatches.add("InvoiceNum")
+    if "开票日期" in label_mismatches:
+        qr_mismatches.add("InvoiceDate")
+    if "二维码金额" in label_mismatches:
+        qr_mismatches.update({"TotalAmount", "AmountInFiguers"})
+
+    error_tokens = {
+        "InvoiceNum": ("发票号码",),
+        "InvoiceDate": ("开票日期",),
+        "PurchaserName": ("购买方名称",),
+        "PurchaserRegisterNum": ("购买方税号",),
+        "SellerName": ("销售方名称",),
+        "SellerRegisterNum": ("销售方税号",),
+        "TotalAmount": ("金额", "税额", "价税合计"),
+        "TotalTax": ("金额", "税额", "价税合计"),
+        "AmountInFiguers": ("金额", "税额", "价税合计"),
+    }
+    reliability: dict[str, dict] = {}
+    for key, label in config.REVIEW_FIELDS:
+        value = field(data, key).strip()
+        check = checks.get(key, {})
+        corroborations: list[str] = []
+        issues: list[str] = []
+
+        if key == "InvoiceNum":
+            confirm = field(data, "InvoiceNumConfirm").strip()
+            if confirm and _normalized(confirm) == _normalized(value):
+                corroborations.append("百度辅助校验值一致")
+        if key in qr_matches:
+            corroborations.append("二维码交叉一致")
+        if key in qr_mismatches:
+            issues.append("二维码字段冲突")
+        if key in {"TotalAmount", "TotalTax", "AmountInFiguers"} and header_ok:
+            corroborations.append("价税勾稽通过")
+        if key in {"TotalAmount", "TotalTax"} and header_ok and qr_matches.intersection(
+            {"TotalAmount", "AmountInFiguers"}
+        ):
+            corroborations.append("二维码金额与票头价税链路一致")
+        if key == "AmountInFiguers" and uppercase_ok:
+            corroborations.append("大写与小写金额一致")
+        if key in {"PurchaserRegisterNum", "SellerRegisterNum"}:
+            normalized_tax_id = _normalized(value)
+            if len(normalized_tax_id) == 18 and valid_uscc(normalized_tax_id):
+                corroborations.append("统一社会信用代码校验位通过")
+        if key == "PurchaserName" and config.EXPECTED_PURCHASER_NAMES:
+            normalized_name = re.sub(r"\s+", "", value)
+            expected_names = {
+                re.sub(r"\s+", "", item)
+                for item in config.EXPECTED_PURCHASER_NAMES
+            }
+            if normalized_name in expected_names:
+                corroborations.append("购买方主数据一致")
+
+        tokens = error_tokens.get(key, ())
+        field_errors = [
+            message for message in control_errors
+            if any(token in message for token in tokens)
+        ]
+        field_warnings = [
+            message for message in control_warnings
+            if any(token in message for token in tokens)
+        ]
+        issues.extend(field_errors)
+        if check.get("status") == "error":
+            issues.append(check.get("reason") or "字段校验失败")
+        if quality_status == "error":
+            issues.append("原图质量未通过")
+
+        strong_corroborations = [
+            reason for reason in corroborations
+            if reason != "价税勾稽通过"
+        ]
+        if not value:
+            level = "low"
+            reasons = ["字段未识别"]
+        elif issues:
+            level = "low"
+            reasons = list(dict.fromkeys(issues))
+        elif strong_corroborations and quality_status != "warning":
+            level = "high"
+            reasons = list(dict.fromkeys(corroborations))
+        else:
+            level = "medium"
+            reasons = list(dict.fromkeys(corroborations + field_warnings))
+            if quality_status == "warning":
+                reasons.append("原图质量存在警告")
+            if not reasons:
+                reasons.append("仅有OCR提取，缺少独立字段交叉证据")
+
+        reliability[key] = {
+            "label": label,
+            "level": level,
+            "reasons": list(dict.fromkeys(reasons)),
+            "corroboration_count": len(set(corroborations)),
+        }
+    return reliability
 
 
 def assess_review(
@@ -230,8 +355,17 @@ def assess_review(
         message = "需要人工复核：" + (
             "；".join(reasons) if reasons else "自动通过未启用"
         )
+    field_reliability = _field_reliability(
+        data, checks, control, quality, qr
+    )
+    reliability_summary = {
+        level: sum(
+            item["level"] == level for item in field_reliability.values()
+        )
+        for level in ("high", "medium", "low")
+    }
     return {
-        "policy_version": "3.4",
+        "policy_version": "3.6",
         "review_status": review_status,
         "routing_type": routing_type,
         # risk_level 保留给旧数据库/接口，语义调整为“业务风险”。
@@ -254,6 +388,9 @@ def assess_review(
             "policy": policy_reasons,
         },
         "field_checks": checks,
+        "field_reliability": field_reliability,
+        "field_reliability_summary": reliability_summary,
+        "field_reliability_note": "可解释证据等级，不是模型原生概率",
         "evidence_label": "规则证据",
         "evidence_channels": {
             "ocr": {
@@ -271,6 +408,8 @@ def assess_review(
                 "decoder": qr.get("decoder"),
                 "matches": qr.get("matches", []),
                 "mismatches": qr.get("mismatches", []),
+                "field_matches": qr.get("field_matches", []),
+                "field_mismatches": qr.get("field_mismatches", []),
             },
             "business_rules": {
                 "status": "pass" if control.get("status") == "pass" else "review",

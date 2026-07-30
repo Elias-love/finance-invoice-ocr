@@ -30,12 +30,22 @@ def test_clean_invoice_can_auto_pass(monkeypatch):
             "status": "verified",
             "matches": ["发票号码", "开票日期", "合计金额"],
             "mismatches": [],
+            "field_matches": [
+                "InvoiceNum", "InvoiceDate", "TotalAmount",
+            ],
+            "field_mismatches": [],
         },
     }
     review = assess_review(data, validate_invoice(data), source_sha256="abc")
     assert review["review_status"] == "auto_pass"
     assert review["risk_level"] == "low"
     assert review["confidence_score"] is None
+    assert review["field_reliability"]["InvoiceNum"]["level"] == "high"
+    assert review["field_reliability"]["InvoiceDate"]["level"] == "high"
+    assert review["field_reliability"]["TotalAmount"]["level"] == "high"
+    assert review["field_reliability"]["TotalTax"]["level"] == "high"
+    assert review["field_reliability"]["SellerName"]["level"] == "medium"
+    assert "不是模型原生概率" in review["field_reliability_note"]
 
 
 def test_missing_field_enters_high_risk_review():
@@ -44,6 +54,7 @@ def test_missing_field_enters_high_risk_review():
     assert review["review_status"] == "pending"
     assert review["risk_level"] == "high"
     assert review["field_checks"]["SellerName"]["status"] == "error"
+    assert review["field_reliability"]["SellerName"]["level"] == "low"
 
 
 def test_confirmation_mismatch_requires_review():
@@ -52,6 +63,7 @@ def test_confirmation_mismatch_requires_review():
     assert review["review_status"] == "pending"
     assert review["risk_level"] == "high"
     assert "辅助校验" in review["field_checks"]["InvoiceNum"]["reason"]
+    assert review["field_reliability"]["InvoiceNum"]["level"] == "low"
 
 
 def test_current_batch_duplicate_requires_review():
@@ -122,6 +134,8 @@ def test_header_scope_ignores_partial_page_detail_for_risk(monkeypatch):
     assert review["processing_priority"] == "normal"
     assert review["evidence_completeness"] == "complete"
     assert review["detail_integrity"] == "not_required"
+    assert review["field_reliability"]["TotalAmount"]["level"] == "medium"
+    assert review["field_reliability"]["TotalTax"]["level"] == "medium"
 
 
 def test_missing_qr_is_evidence_gap_not_invoice_risk():

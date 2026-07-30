@@ -249,6 +249,19 @@
             font-size: 14px;
             word-break: break-all;
         }
+        .reliability-badge {
+            display: inline-block;
+            margin-left: 6px;
+            padding: 2px 7px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 650;
+            vertical-align: 1px;
+            cursor: help;
+        }
+        .reliability-high { background: #d1fae5; color: #047857; }
+        .reliability-medium { background: #fef3c7; color: #92400e; }
+        .reliability-low { background: #fee2e2; color: #b91c1c; }
         .action-buttons {
             display: flex;
             gap: 8px;
@@ -636,6 +649,19 @@
                         差额 ${escapeHtml(detail.tax_difference ?? '-')}。
                     </div>
                 ` : '';
+                const fieldReliability = review.field_reliability || {};
+                const reliabilityBadge = (key) => {
+                    const evidence = fieldReliability[key];
+                    if (!evidence?.level) return '';
+                    const levelLabel = {
+                        high: '高',
+                        medium: '中',
+                        low: '低'
+                    }[evidence.level] || '-';
+                    const explanation = (evidence.reasons || []).join('；')
+                        || '暂无证据说明';
+                    return `<span class="reliability-badge reliability-${escapeHtml(evidence.level)}" title="${escapeHtml(explanation)}">可靠性${escapeHtml(levelLabel)}</span>`;
+                };
                 
                 html += `
                     <div class="result-item ${duplicateClass}" id="result-${index}">
@@ -653,21 +679,22 @@
                             <div class="evidence-line">
                                 ${escapeHtml(qualityStatus)} · ${escapeHtml(qrStatus)}
                                 · ${escapeHtml(detailLabel)}
+                                · 字段可靠性是交叉证据等级，不是模型概率
                                 ${item._cache_hit ? ' · 已复用历史识别缓存，未重复调用付费 OCR' : ''}
                             </div>
                         </div>
                         ${detailAlert}
                         <div class="row">
-                            <div><span class="label">发票号码：</span><span class="value">${escapeHtml(item.InvoiceNum || item.InvoiceNo || '-')}</span></div>
-                            <div><span class="label">开票日期：</span><span class="value">${escapeHtml(item.InvoiceDate || '-')}</span></div>
+                            <div><span class="label">发票号码：</span><span class="value">${escapeHtml(item.InvoiceNum || item.InvoiceNo || '-')}</span>${reliabilityBadge('InvoiceNum')}</div>
+                            <div><span class="label">开票日期：</span><span class="value">${escapeHtml(item.InvoiceDate || '-')}</span>${reliabilityBadge('InvoiceDate')}</div>
                         </div>
                         <div class="row">
-                            <div><span class="label">销售方名称：</span><span class="value">${escapeHtml(item.SellerName || '-')}</span></div>
-                            <div><span class="label">购买方名称：</span><span class="value">${escapeHtml(item.PurchaserName || '-')}</span></div>
+                            <div><span class="label">销售方名称：</span><span class="value">${escapeHtml(item.SellerName || '-')}</span>${reliabilityBadge('SellerName')}</div>
+                            <div><span class="label">购买方名称：</span><span class="value">${escapeHtml(item.PurchaserName || '-')}</span>${reliabilityBadge('PurchaserName')}</div>
                         </div>
                         <div class="row">
-                            <div><span class="label">合计金额：</span><span class="value">${escapeHtml(item.TotalAmount || '-')}</span></div>
-                            <div><span class="label">合计税额：</span><span class="value">${escapeHtml(item.TotalTax || '-')}</span></div>
+                            <div><span class="label">合计金额：</span><span class="value">${escapeHtml(item.TotalAmount || '-')}</span>${reliabilityBadge('TotalAmount')}</div>
+                            <div><span class="label">合计税额：</span><span class="value">${escapeHtml(item.TotalTax || '-')}</span>${reliabilityBadge('TotalTax')}</div>
                         </div>
                         <div class="action-buttons">
                             <button class="btn btn-warning" onclick="reRecognize(${index}, this)">🔄 重新识别</button>

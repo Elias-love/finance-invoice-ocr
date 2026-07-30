@@ -103,7 +103,10 @@ def _rate_limit_ok(client_key: str, units: int = 1) -> bool:
 
 
 def _verify_csrf():
-    submitted = request.form.get("_csrf_token", "")
+    submitted = (
+        request.form.get("_csrf_token", "")
+        or request.headers.get("X-CSRF-Token", "")
+    )
     expected = session.get("_csrf_token", "")
     if not submitted or not expected or not hmac.compare_digest(submitted, expected):
         abort(400, description="CSRF token 校验失败")
@@ -153,16 +156,50 @@ def _exportable_records(record_ids: list) -> list[dict]:
     ]
 
 
+def _record_for_batch(record: dict) -> dict:
+    """把数据库记录还原成首页识别卡片使用的结构。"""
+    item = dict(record["data"])
+    item.update({
+        "_control": record.get("validation") or {},
+        "_review": record.get("review") or {},
+        "_record_id": record["id"],
+        "_fileName": record.get("source_filename") or "",
+        "_isDuplicate": record.get("validation_status") == "duplicate",
+    })
+    return item
+
+
+def _current_batch_records() -> list[dict]:
+    """读取当前会话的识别批次，并清理已不存在的记录 ID。"""
+    if "current_batch_ids" not in session:
+        # 兼容升级前已经完成识别、但尚未写入会话批次 ID 的页面：
+        # 按最近一次上传文件的 SHA-256 恢复其全部页，不再次调用 OCR。
+        recovered = storage.get_latest_source_batch()
+        session["current_batch_ids"] = [record["id"] for record in recovered]
+        return recovered
+
+    requested_ids = session.get("current_batch_ids", [])
+    records = storage.get_by_ids(requested_ids)
+    valid_ids = [record["id"] for record in records]
+    if valid_ids != requested_ids:
+        session["current_batch_ids"] = valid_ids
+    return records
+
+
 def _register_routes(app: Flask):
 
     @app.route("/")
     @_admin_required
     def index():
+        current_batch_results = [
+            _record_for_batch(record) for record in _current_batch_records()
+        ]
         return render_template(
             "index.html",
             ocr_configured=bool(
                 config.BAIDU_OCR_API_KEY and config.BAIDU_OCR_SECRET_KEY
             ),
+            current_batch_results=current_batch_results,
         )
 
     @app.route("/admin", methods=["GET", "POST"])
@@ -219,6 +256,9 @@ def _register_routes(app: Flask):
         record = storage.get_by_id(record_id)
         if not record:
             abort(404)
+        return_to = request.args.get("return_to", "")
+        if return_to not in {"/", "/admin/dashboard"}:
+            return_to = "/admin/dashboard"
 
         error = None
         if request.method == "POST":
@@ -268,7 +308,11 @@ def _register_routes(app: Flask):
                     validation=control,
                     review=review,
                 )
-                return redirect(url_for("admin_review", record_id=record_id))
+                return redirect(url_for(
+                    "admin_review",
+                    record_id=record_id,
+                    return_to=return_to,
+                ))
 
             record = {
                 **record,
@@ -283,6 +327,12 @@ def _register_routes(app: Flask):
             review_fields=config.REVIEW_FIELDS,
             events=storage.get_review_events(record_id),
             error=error,
+            back_url=return_to,
+            back_label=(
+                "返回本批识别结果"
+                if return_to == "/"
+                else "返回复核队列"
+            ),
         )
 
     @app.route("/admin/source/<int:record_id>")
@@ -311,6 +361,9 @@ def _register_routes(app: Flask):
     @app.route("/api/recognize", methods=["POST"])
     @_api_admin_required
     def recognize():
+        if request.form.get("batch_action") == "reset":
+            session["current_batch_ids"] = []
+
         client_key = request.remote_addr or "unknown"
         if "file" not in request.files:
             return jsonify({"items": [], "error": "未收到上传文件"}), 400
@@ -380,6 +433,14 @@ def _register_routes(app: Flask):
                 invoice_data["_control"] = control
                 invoice_data["_review"] = review
                 invoice_data["_record_id"] = record_id
+            new_record_ids = [
+                item["_record_id"] for item in results if item.get("_record_id")
+            ]
+            if new_record_ids:
+                current_ids = session.get("current_batch_ids", [])
+                session["current_batch_ids"] = list(dict.fromkeys(
+                    [*current_ids, *new_record_ids]
+                ))[-200:]
             # 识别成功但未提取到发票时，明确告知而非静默返回空
             error = None if results else "未识别到发票内容，请确认上传的是清晰的增值税发票"
             return jsonify({"items": results, "error": error})
@@ -389,6 +450,29 @@ def _register_routes(app: Flask):
         except Exception as e:  # 兜底：仍返回明确错误而非空数组
             logger.exception("识别异常")
             return jsonify({"items": [], "error": f"识别异常：{e}"}), 500
+
+    @app.route("/api/current-batch/remove", methods=["POST"])
+    @_api_admin_required
+    def remove_from_current_batch():
+        _verify_csrf()
+        payload = request.get_json(silent=True) or {}
+        try:
+            record_id = int(payload.get("record_id"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "无效的记录 ID"}), 400
+        session["current_batch_ids"] = [
+            rid for rid in session.get("current_batch_ids", [])
+            if rid != record_id
+        ]
+        return jsonify({"ok": True})
+
+    @app.route("/api/current-batch/clear", methods=["POST"])
+    @_api_admin_required
+    def clear_current_batch():
+        _verify_csrf()
+        # 保留显式空列表，避免下一次加载又触发旧版本兼容恢复。
+        session["current_batch_ids"] = []
+        return jsonify({"ok": True})
 
     @app.route("/api/export/excel", methods=["POST"])
     @_api_admin_required

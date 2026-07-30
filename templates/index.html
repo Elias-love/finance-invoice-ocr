@@ -298,7 +298,7 @@
             <div id="fileList" class="file-list"></div>
             
             <div style="text-align: center; display: flex; gap: 12px; justify-content: center; flex-wrap: wrap;">
-                <button class="btn btn-warning" id="clearBtn" onclick="clearAllFiles()">清空全部</button>
+                <button class="btn btn-warning" id="clearBtn" onclick="clearAllFiles()">清空待上传文件</button>
                 <button class="btn" id="recognizeBtn" onclick="startRecognize()" disabled>开始识别</button>
             </div>
             <div class="loading" id="loading">⌛ 正在识别中...</div>
@@ -308,7 +308,13 @@
             <div style="display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap;">
                 <button class="btn btn-success" onclick="exportExcel()" id="exportExcelBtn" disabled>📊 导出Excel</button>
                 <button class="btn" onclick="exportCSV()" id="exportCSVBtn" disabled>📄 导出CSV</button>
+                <button class="btn btn-warning" onclick="clearCurrentBatch()" id="clearBatchBtn" disabled>清除本批结果</button>
             </div>
+            {% if current_batch_results %}
+            <div class="system-status ready" id="restoreNotice">
+                已恢复本批次 {{ current_batch_results|length }} 张发票的最新结果，无需重新上传或再次调用 OCR。
+            </div>
+            {% endif %}
             <div id="resultBox"></div>
         </div>
         
@@ -318,8 +324,9 @@
     </div>
 
     <script>
+        const csrfToken = {{ csrf_token | tojson }};
         let selectedFiles = [];
-        let currentResults = [];
+        let currentResults = {{ current_batch_results | tojson }};
         let processedInvoiceNums = new Set();
         let fileDataCache = new Map();
         let isRecognizing = false;
@@ -349,6 +356,7 @@
             const disabled = exportableRecordIds().length === 0;
             document.getElementById('exportExcelBtn').disabled = disabled;
             document.getElementById('exportCSVBtn').disabled = disabled;
+            document.getElementById('clearBatchBtn').disabled = currentResults.length === 0;
         }
 
         async function parseApiResponse(resp) {
@@ -453,6 +461,9 @@
                     loadingEl.textContent = `正在识别第 ${i + 1}/${selectedFiles.length} 个文件：${file.name}`;
                     const formData = new FormData();
                     formData.append('file', file);
+                    if (i === 0) {
+                        formData.append('batch_action', 'reset');
+                    }
                     const resp = await fetch('/api/recognize', { 
                         method: 'POST', 
                         body: formData 
@@ -524,7 +535,7 @@
                             状态：${escapeHtml(statusLabel)}
                             · 风险：${escapeHtml({high:'高',medium:'中',low:'低'}[review.risk_level] || '-')}
                             · 证据等级：${escapeHtml({high:'高',medium:'中',low:'低'}[review.evidence_grade] || '-')}
-                            ${item._record_id ? ` · <a href="/admin/review/${Number(item._record_id)}">进入人工复核</a>` : ''}
+                            ${item._record_id ? ` · <a href="/admin/review/${Number(item._record_id)}?return_to=%2F">进入人工复核</a>` : ''}
                         </div>
                         <div class="row">
                             <div><span class="label">发票号码：</span><span class="value">${escapeHtml(item.InvoiceNum || item.InvoiceNo || '-')}</span></div>
@@ -548,9 +559,27 @@
             box.innerHTML = html;
         }
 
-        function deleteResult(index) {
-            if (confirm('确定要删除这条发票记录吗？')) {
+        async function deleteResult(index) {
+            if (confirm('确定从本批结果中移除吗？台账记录和审计轨迹仍会保留。')) {
                 const deletedItem = currentResults[index];
+                if (deletedItem?._record_id) {
+                    try {
+                        const resp = await fetch('/api/current-batch/remove', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'X-CSRF-Token': csrfToken
+                            },
+                            body: JSON.stringify({
+                                record_id: Number(deletedItem._record_id)
+                            })
+                        });
+                        await parseApiResponse(resp);
+                    } catch (e) {
+                        showErrors([`移除失败：${e.message}`]);
+                        return;
+                    }
+                }
                 currentResults.splice(index, 1);
                 
                 processedInvoiceNums.clear();
@@ -576,6 +605,27 @@
                 
                 renderResults();
                 updateExportButtons();
+            }
+        }
+
+        async function clearCurrentBatch() {
+            if (!currentResults.length) return;
+            if (!confirm('确定清除首页的本批识别结果吗？台账记录和审计轨迹仍会保留。')) {
+                return;
+            }
+            try {
+                const resp = await fetch('/api/current-batch/clear', {
+                    method: 'POST',
+                    headers: {'X-CSRF-Token': csrfToken}
+                });
+                await parseApiResponse(resp);
+                currentResults = [];
+                processedInvoiceNums.clear();
+                document.getElementById('restoreNotice')?.remove();
+                renderResults();
+                updateExportButtons();
+            } catch (e) {
+                showErrors([`清除失败：${e.message}`]);
             }
         }
 
@@ -694,6 +744,15 @@
                 alert('导出CSV失败: ' + e.message);
             }
         }
+
+        currentResults.forEach(item => {
+            const invoiceNum = item.InvoiceNum || item.InvoiceNo;
+            if (invoiceNum) processedInvoiceNums.add(invoiceNum);
+        });
+        if (currentResults.length) {
+            renderResults();
+        }
+        updateExportButtons();
     </script>
 </body>
 </html>

@@ -48,7 +48,7 @@
 <body>
     <div class="topbar">
         <h1>发票复核 #{{ record.id }}</h1>
-        <div><a href="/admin/dashboard">返回复核队列</a> · <a href="/admin/source/{{ record.id }}?download=1">下载原文件</a></div>
+        <div><a href="{{ back_url }}">{{ back_label }}</a> · <a href="/admin/source/{{ record.id }}?download=1">下载原文件</a></div>
     </div>
 
     <div class="layout">

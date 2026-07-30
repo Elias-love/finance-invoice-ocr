@@ -113,3 +113,24 @@ def test_review_update_preserves_original_and_writes_audit(temp_db):
     assert record["review_status"] == "approved"
     events = storage.get_review_events(rid)
     assert [e["action"] for e in events] == ["approved", "recognized"]
+
+
+def test_latest_source_batch_returns_all_pages_of_latest_file(temp_db):
+    storage.add_record(
+        {"InvoiceNum": "OLD"},
+        source_sha256="old-source",
+    )
+    first = storage.add_record(
+        {"InvoiceNum": "NEW-1"},
+        source_sha256="new-source",
+    )
+    second = storage.add_record(
+        {"InvoiceNum": "NEW-2"},
+        source_sha256="new-source",
+    )
+    batch = storage.get_latest_source_batch()
+    assert [record["id"] for record in batch] == [first, second]
+    assert [record["data"]["InvoiceNum"] for record in batch] == [
+        "NEW-1",
+        "NEW-2",
+    ]

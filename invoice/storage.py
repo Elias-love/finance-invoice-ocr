@@ -188,6 +188,24 @@ def get_by_ids(record_ids: list[int]) -> list[dict]:
     return sorted(decoded, key=lambda r: order.get(r["id"], len(order)))
 
 
+def get_latest_source_batch() -> list[dict]:
+    """返回最近一次上传文件产生的全部记录，供旧会话恢复识别批次。"""
+    with _connect() as conn:
+        latest = conn.execute(
+            """SELECT source_sha256 FROM invoices
+               WHERE COALESCE(source_sha256, '') != ''
+               ORDER BY id DESC LIMIT 1"""
+        ).fetchone()
+        if not latest:
+            return []
+        rows = conn.execute(
+            """SELECT * FROM invoices
+               WHERE source_sha256 = ? ORDER BY id ASC""",
+            (latest["source_sha256"],),
+        ).fetchall()
+    return [_decode_record(row) for row in rows]
+
+
 def get_review_events(record_id: int) -> list[dict]:
     with _connect() as conn:
         rows = conn.execute(

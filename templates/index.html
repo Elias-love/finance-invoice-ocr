@@ -123,6 +123,8 @@
             margin: 16px 0;
             text-align: center;
         }
+        .retry-failed { display: none; background: #b45309; }
+        .evidence-line { margin-top: 7px; color: #64748b; font-size: 12px; }
         .system-status, .error-box {
             padding: 11px 14px;
             border-radius: 8px;
@@ -300,6 +302,7 @@
             <div style="text-align: center; display: flex; gap: 12px; justify-content: center; flex-wrap: wrap;">
                 <button class="btn btn-warning" id="clearBtn" onclick="clearAllFiles()">清空待上传文件</button>
                 <button class="btn" id="recognizeBtn" onclick="startRecognize()" disabled>开始识别</button>
+                <button class="btn retry-failed" id="retryFailedBtn" onclick="startRecognize(true)">仅重试失败文件</button>
             </div>
             <div class="loading" id="loading">⌛ 正在识别中...</div>
         </div>
@@ -319,7 +322,7 @@
         </div>
         
         <div class="footer">
-            © 财务部增值税发票智能识别与复核系统 v2.0 | 2026 年 7 月
+            © 财务部增值税发票智能识别与复核系统 v3.0 | 2026 年 7 月
         </div>
     </div>
 
@@ -330,6 +333,7 @@
         let processedInvoiceNums = new Set();
         let fileDataCache = new Map();
         let isRecognizing = false;
+        let failedFiles = [];
 
         function escapeHtml(value) {
             return String(value ?? '')
@@ -431,13 +435,16 @@
 
         function clearAllFiles() {
             selectedFiles = [];
+            failedFiles = [];
             fileDataCache.clear();
+            document.getElementById('retryFailedBtn').style.display = 'none';
             updateFileList();
         }
 
-        async function startRecognize() {
+        async function startRecognize(retryOnly = false) {
             if (isRecognizing) return;
-            if (selectedFiles.length === 0) {
+            const filesToProcess = retryOnly ? failedFiles : selectedFiles;
+            if (filesToProcess.length === 0) {
                 alert('请先选择文件');
                 return;
             }
@@ -449,29 +456,34 @@
 
             loadingEl.style.display = 'block';
             recognizeBtn.disabled = true;
-            resultBox.innerHTML = '';
-            currentResults = [];
-            processedInvoiceNums = new Set();
+            if (!retryOnly) {
+                resultBox.innerHTML = '';
+                currentResults = [];
+                processedInvoiceNums = new Set();
+            }
             const errors = [];
+            const nextFailures = [];
             showErrors([]);
 
             try {
-                for (let i = 0; i < selectedFiles.length; i++) {
-                    const file = selectedFiles[i];
-                    loadingEl.textContent = `正在识别第 ${i + 1}/${selectedFiles.length} 个文件：${file.name}`;
+                for (let i = 0; i < filesToProcess.length; i++) {
+                    const file = filesToProcess[i];
+                    const originalIndex = selectedFiles.indexOf(file);
+                    loadingEl.textContent = `正在识别第 ${i + 1}/${filesToProcess.length} 个文件：${file.name}`;
                     const formData = new FormData();
                     formData.append('file', file);
-                    if (i === 0) {
+                    if (!retryOnly && i === 0) {
                         formData.append('batch_action', 'reset');
                     }
                     const resp = await fetch('/api/recognize', { 
                         method: 'POST', 
-                        body: formData 
+                        body: formData,
+                        headers: {'X-CSRF-Token': csrfToken}
                     });
                     try {
                         const data = await parseApiResponse(resp);
                         (data.items || []).forEach((item, idx) => {
-                            item._fileIndex = i;
+                            item._fileIndex = originalIndex;
                             item._fileName = file.name;
                             item._itemIndex = idx;
                             const invoiceNum = item.InvoiceNum || item.InvoiceNo;
@@ -484,16 +496,21 @@
                         });
                     } catch (e) {
                         errors.push(`${file.name}：${e.message}`);
+                        nextFailures.push(file);
                     }
                 }
             } catch (e) {
                 errors.push(`网络异常：${e.message}`);
+                nextFailures.push(...filesToProcess);
             } finally {
                 isRecognizing = false;
                 loadingEl.style.display = 'none';
                 recognizeBtn.disabled = false;
             }
 
+            failedFiles = [...new Set(nextFailures)];
+            document.getElementById('retryFailedBtn').style.display =
+                failedFiles.length ? 'inline-block' : 'none';
             showErrors(errors);
             renderResults();
             updateExportButtons();
@@ -523,6 +540,18 @@
                     approved: '人工已通过',
                     rejected: '已驳回'
                 }[review.review_status] || '待人工复核';
+                const qualityStatus = {
+                    pass: '图像质量通过',
+                    warning: '图像质量警告',
+                    error: '图像质量不合格',
+                    unavailable: '图像质量未检查'
+                }[review.evidence_channels?.image_quality?.status] || '图像质量未检查';
+                const qrStatus = {
+                    verified: '二维码交叉验证一致',
+                    mismatch: '二维码字段冲突',
+                    partial: '二维码可读但证据不足',
+                    unavailable: '二维码未读取'
+                }[review.evidence_channels?.qr_crosscheck?.status] || '二维码未读取';
                 
                 html += `
                     <div class="result-item ${duplicateClass}" id="result-${index}">
@@ -534,8 +563,12 @@
                         <div class="review-meta">
                             状态：${escapeHtml(statusLabel)}
                             · 风险：${escapeHtml({high:'高',medium:'中',low:'低'}[review.risk_level] || '-')}
-                            · 证据等级：${escapeHtml({high:'高',medium:'中',low:'低'}[review.evidence_grade] || '-')}
+                            · 规则证据：${escapeHtml({high:'高',medium:'中',low:'低'}[review.evidence_grade] || '-')}
                             ${item._record_id ? ` · <a href="/admin/review/${Number(item._record_id)}?return_to=%2F">进入人工复核</a>` : ''}
+                            <div class="evidence-line">
+                                ${escapeHtml(qualityStatus)} · ${escapeHtml(qrStatus)}
+                                ${item._cache_hit ? ' · 已复用历史识别缓存，未重复调用付费 OCR' : ''}
+                            </div>
                         </div>
                         <div class="row">
                             <div><span class="label">发票号码：</span><span class="value">${escapeHtml(item.InvoiceNum || item.InvoiceNo || '-')}</span></div>
@@ -631,10 +664,8 @@
 
         async function reRecognize(index) {
             const item = currentResults[index];
-            const file = selectedFiles[item._fileIndex];
-            
-            if (!file) {
-                alert('找不到原始文件，无法重新识别');
+            if (!item?._record_id) {
+                alert('该记录尚未保存，无法执行单页重识别');
                 return;
             }
             
@@ -642,38 +673,26 @@
             loadingEl.textContent = `正在重新识别第 ${index + 1} 张发票`;
             loadingEl.style.display = 'block';
             
-            const formData = new FormData();
-            formData.append('file', file);
-            
             try {
-                const resp = await fetch('/api/recognize', { 
-                    method: 'POST', 
-                    body: formData 
+                const resp = await fetch(`/api/records/${Number(item._record_id)}/rerun`, {
+                    method: 'POST',
+                    headers: {'X-CSRF-Token': csrfToken}
                 });
                 const data = await parseApiResponse(resp);
-                
-                if (data.items && data.items.length > item._itemIndex) {
-                    const newItem = data.items[item._itemIndex];
+                if (data.item) {
+                    const newItem = data.item;
                     newItem._fileIndex = item._fileIndex;
                     newItem._fileName = item._fileName;
                     newItem._itemIndex = item._itemIndex;
-                    
-                    const invoiceNum = newItem.InvoiceNum || newItem.InvoiceNo;
-                    if (invoiceNum) {
-                        const oldNum = currentResults[index].InvoiceNum || currentResults[index].InvoiceNo;
-                        if (oldNum) {
-                            const tempSet = new Set(processedInvoiceNums);
-                            tempSet.delete(oldNum);
-                            newItem._isDuplicate = tempSet.has(invoiceNum);
-                            tempSet.add(invoiceNum);
-                            processedInvoiceNums = tempSet;
-                        }
-                    }
-                    
                     currentResults[index] = newItem;
+                    processedInvoiceNums = new Set(
+                        currentResults
+                            .map(entry => entry.InvoiceNum || entry.InvoiceNo)
+                            .filter(Boolean)
+                    );
                     renderResults();
+                    updateExportButtons();
                 }
-                
             } catch (e) {
                 showErrors([`重新识别失败：${e.message}`]);
             }
@@ -691,7 +710,10 @@
             try {
                 const resp = await fetch('/api/export/excel', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-Token': csrfToken
+                    },
                     body: JSON.stringify({ record_ids: exportableRecordIds() })
                 });
                 
@@ -723,7 +745,10 @@
             try {
                 const resp = await fetch('/api/export/csv', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-CSRF-Token': csrfToken
+                    },
                     body: JSON.stringify({ record_ids: exportableRecordIds() })
                 });
                 

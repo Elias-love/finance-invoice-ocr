@@ -49,6 +49,17 @@ CREATE TABLE IF NOT EXISTS review_events (
     detail_json TEXT NOT NULL DEFAULT '{}',
     FOREIGN KEY(invoice_id) REFERENCES invoices(id)
 );
+
+CREATE TABLE IF NOT EXISTS recognition_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    invoice_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    raw_json TEXT NOT NULL,
+    validation_json TEXT NOT NULL,
+    review_json TEXT NOT NULL,
+    FOREIGN KEY(invoice_id) REFERENCES invoices(id)
+);
 """
 
 
@@ -216,7 +227,7 @@ def get_latest_source_batch() -> list[dict]:
     """返回最近一次上传文件产生的全部记录，供旧会话恢复识别批次。"""
     with _connect() as conn:
         latest = conn.execute(
-            """SELECT source_sha256 FROM invoices
+            """SELECT source_sha256, created_at FROM invoices
                WHERE COALESCE(source_sha256, '') != ''
                ORDER BY id DESC LIMIT 1"""
         ).fetchone()
@@ -224,10 +235,47 @@ def get_latest_source_batch() -> list[dict]:
             return []
         rows = conn.execute(
             """SELECT * FROM invoices
-               WHERE source_sha256 = ? ORDER BY id ASC""",
-            (latest["source_sha256"],),
+               WHERE source_sha256 = ? AND created_at = ? ORDER BY id ASC""",
+            (latest["source_sha256"], latest["created_at"]),
         ).fetchall()
     return [_decode_record(row) for row in rows]
+
+
+def get_by_source_sha256(source_sha256: str) -> list[dict]:
+    """读取同一原始文件已有的分页结果，用于幂等缓存，避免重复付费 OCR。"""
+    if not source_sha256:
+        return []
+    with _connect() as conn:
+        rows = conn.execute(
+            """SELECT * FROM invoices
+               WHERE id IN (
+                   SELECT MIN(id) FROM invoices
+                   WHERE source_sha256 = ?
+                   GROUP BY COALESCE(source_page, id)
+               )
+               ORDER BY source_page ASC, id ASC""",
+            (source_sha256,),
+        ).fetchall()
+    return [_decode_record(row) for row in rows]
+
+
+def get_next_pending(record_id: int) -> int | None:
+    """返回下一条待复核记录；到队尾后从最早记录继续。"""
+    with _connect() as conn:
+        row = conn.execute(
+            """SELECT id FROM invoices
+               WHERE review_status = 'pending' AND id > ?
+               ORDER BY id ASC LIMIT 1""",
+            (record_id,),
+        ).fetchone()
+        if not row:
+            row = conn.execute(
+                """SELECT id FROM invoices
+                   WHERE review_status = 'pending' AND id != ?
+                   ORDER BY id ASC LIMIT 1""",
+                (record_id,),
+            ).fetchone()
+    return int(row["id"]) if row else None
 
 
 def get_review_events(record_id: int) -> list[dict]:
@@ -271,6 +319,20 @@ def update_review(
     d = display_fields(corrected_data)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with _connect() as conn:
+        previous_row = conn.execute(
+            "SELECT raw_json, corrected_json FROM invoices WHERE id = ?",
+            (record_id,),
+        ).fetchone()
+        previous = {}
+        if previous_row:
+            previous = json.loads(
+                previous_row["corrected_json"] or previous_row["raw_json"] or "{}"
+            )
+        changed = {
+            key: {"from": previous.get(key, ""), "to": value}
+            for key, value in corrected_data.items()
+            if not str(key).startswith("_") and previous.get(key, "") != value
+        }
         conn.execute(
             """UPDATE invoices SET
                invoice_num=?, invoice_date=?, purchaser_name=?, seller_name=?,
@@ -299,7 +361,69 @@ def update_review(
                 json.dumps({
                     "note": note,
                     "validation_status": validation.get("status"),
-                    "changed": corrected_data,
+                    "changed": changed,
+                }, ensure_ascii=False),
+            ),
+        )
+
+
+def update_recognition_attempt(
+    record_id: int,
+    *,
+    invoice_data: dict,
+    actor: str,
+    validation: dict,
+    review: dict,
+) -> None:
+    """保存一次单页重识别尝试，并将其作为当前候选值，不覆盖首轮原始 OCR。"""
+    d = display_fields(invoice_data)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with _connect() as conn:
+        conn.execute(
+            """INSERT INTO recognition_attempts
+               (invoice_id, created_at, actor, raw_json, validation_json, review_json)
+               VALUES (?,?,?,?,?,?)""",
+            (
+                record_id,
+                now,
+                actor,
+                json.dumps(invoice_data, ensure_ascii=False),
+                json.dumps(validation, ensure_ascii=False),
+                json.dumps(review, ensure_ascii=False),
+            ),
+        )
+        conn.execute(
+            """UPDATE invoices SET
+               invoice_num=?, invoice_date=?, purchaser_name=?, seller_name=?,
+               total_amount=?, total_tax=?, corrected_json=?,
+               validation_status=?, validation_json=?,
+               review_status=?, risk_level=?, review_json=?
+               WHERE id=?""",
+            (
+                d["invoice_num"], d["invoice_date"], d["purchaser_name"],
+                d["seller_name"], d["total_amount"], d["total_tax"],
+                json.dumps(invoice_data, ensure_ascii=False),
+                validation.get("status", "review"),
+                json.dumps(validation, ensure_ascii=False),
+                review.get("review_status", "pending"),
+                review.get("risk_level", "medium"),
+                json.dumps(review, ensure_ascii=False),
+                record_id,
+            ),
+        )
+        conn.execute(
+            """INSERT INTO review_events
+               (invoice_id, created_at, actor, action, detail_json)
+               VALUES (?,?,?,?,?)""",
+            (
+                record_id,
+                now,
+                actor,
+                "re_recognized",
+                json.dumps({
+                    "source_page": invoice_data.get("_source_page"),
+                    "review_status": review.get("review_status"),
+                    "risk_level": review.get("risk_level"),
                 }, ensure_ascii=False),
             ),
         )
@@ -328,6 +452,52 @@ def initialize_review_metadata(
                 review.get("risk_level", "medium"),
                 json.dumps(review, ensure_ascii=False),
                 record_id,
+            ),
+        )
+
+
+def refresh_machine_metadata(
+    record_id: int,
+    *,
+    current_data: dict,
+    validation: dict,
+    review: dict,
+) -> None:
+    """升级本地证据策略；保留首轮 OCR，只更新当前候选值和机器证据。"""
+    d = display_fields(current_data)
+    with _connect() as conn:
+        conn.execute(
+            """UPDATE invoices SET
+               invoice_num=?, invoice_date=?, purchaser_name=?, seller_name=?,
+               total_amount=?, total_tax=?, corrected_json=?,
+               validation_status=?, validation_json=?,
+               review_status=?, risk_level=?, review_json=?
+               WHERE id=?""",
+            (
+                d["invoice_num"], d["invoice_date"], d["purchaser_name"],
+                d["seller_name"], d["total_amount"], d["total_tax"],
+                json.dumps(current_data, ensure_ascii=False),
+                validation.get("status", "review"),
+                json.dumps(validation, ensure_ascii=False),
+                review.get("review_status", "pending"),
+                review.get("risk_level", "medium"),
+                json.dumps(review, ensure_ascii=False),
+                record_id,
+            ),
+        )
+        conn.execute(
+            """INSERT INTO review_events
+               (invoice_id, created_at, actor, action, detail_json)
+               VALUES (?,?,?,?,?)""",
+            (
+                record_id,
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "system",
+                "policy_upgraded",
+                json.dumps({
+                    "policy_version": review.get("policy_version"),
+                    "review_status": review.get("review_status"),
+                }, ensure_ascii=False),
             ),
         )
 
@@ -363,6 +533,7 @@ def clear():
                 "WHERE source_path IS NOT NULL AND source_path <> ''"
             ).fetchall()
         ]
+        conn.execute("DELETE FROM recognition_attempts")
         conn.execute("DELETE FROM review_events")
         conn.execute("DELETE FROM invoices")
     allowed_dir = (config.DB_PATH.parent / "uploads").resolve()

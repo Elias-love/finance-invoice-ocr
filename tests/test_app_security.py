@@ -1,5 +1,6 @@
 import app as invoice_app
 import config
+import hashlib
 from io import BytesIO
 from invoice import storage
 from invoice.review import assess_review
@@ -32,9 +33,9 @@ def test_review_page_renders_and_approval_is_audited(tmp_path, monkeypatch):
         "InvoiceNum": "24442000000000000001",
         "InvoiceDate": "2026年03月01日",
         "PurchaserName": "深圳星辰集团",
-        "PurchaserRegisterNum": "91440300MA5F1CT001",
+        "PurchaserRegisterNum": "9144030005899241X7",
         "SellerName": "珠海东晟",
-        "SellerRegisterNum": "91440400MA5F1CT101",
+        "SellerRegisterNum": "91330281739477958A",
         "TotalAmount": "1000.00",
         "TotalTax": "130.00",
         "AmountInFiguers": "1130.00",
@@ -174,6 +175,7 @@ def test_empty_legacy_batch_session_recovers_latest_source(
 def test_recognize_stores_record_in_current_batch(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "recognized-batch.db")
     monkeypatch.setattr(config, "REVIEW_SAMPLE_RATE", 0)
+    monkeypatch.setattr(config, "REQUIRE_QR_FOR_AUTO_PASS", False)
     storage.init_db()
     monkeypatch.setattr(invoice_app.ocr, "estimate_units", lambda *_: 1)
     monkeypatch.setattr(
@@ -192,6 +194,7 @@ def test_recognize_stores_record_in_current_batch(tmp_path, monkeypatch):
     client = invoice_app.app.test_client()
     with client.session_transaction() as sess:
         sess["is_admin"] = True
+        sess["_csrf_token"] = "csrf-test"
 
     response = client.post(
         "/api/recognize",
@@ -200,6 +203,7 @@ def test_recognize_stores_record_in_current_batch(tmp_path, monkeypatch):
             "batch_action": "reset",
         },
         content_type="multipart/form-data",
+        headers={"X-CSRF-Token": "csrf-test"},
     )
     assert response.status_code == 200
     record_id = response.get_json()["items"][0]["_record_id"]
@@ -213,14 +217,15 @@ def test_duplicate_check_ignores_history_but_flags_current_batch(
 ):
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "batch-duplicate.db")
     monkeypatch.setattr(config, "REVIEW_SAMPLE_RATE", 0)
+    monkeypatch.setattr(config, "REQUIRE_QR_FOR_AUTO_PASS", False)
     storage.init_db()
     invoice_data = {
         "InvoiceNum": "24442000000000000777",
         "InvoiceDate": "2026年07月30日",
         "PurchaserName": "深圳星辰集团",
-        "PurchaserRegisterNum": "91440300MA5F1CT001",
+        "PurchaserRegisterNum": "9144030005899241X7",
         "SellerName": "珠海东晟",
-        "SellerRegisterNum": "91440400MA5F1CT101",
+        "SellerRegisterNum": "91330281739477958A",
         "TotalAmount": "100.00",
         "TotalTax": "13.00",
         "AmountInFiguers": "113.00",
@@ -235,6 +240,7 @@ def test_duplicate_check_ignores_history_but_flags_current_batch(
     client = invoice_app.app.test_client()
     with client.session_transaction() as sess:
         sess["is_admin"] = True
+        sess["_csrf_token"] = "csrf-test"
 
     response = client.post(
         "/api/recognize",
@@ -243,6 +249,7 @@ def test_duplicate_check_ignores_history_but_flags_current_batch(
             "batch_action": "reset",
         },
         content_type="multipart/form-data",
+        headers={"X-CSRF-Token": "csrf-test"},
     )
     assert response.status_code == 200
     first, second = response.get_json()["items"]
@@ -265,14 +272,15 @@ def test_duplicate_check_spans_multiple_files_in_same_batch(
 ):
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "multi-file-batch.db")
     monkeypatch.setattr(config, "REVIEW_SAMPLE_RATE", 0)
+    monkeypatch.setattr(config, "REQUIRE_QR_FOR_AUTO_PASS", False)
     storage.init_db()
     invoice_data = {
         "InvoiceNum": "24442000000000000666",
         "InvoiceDate": "2026年07月30日",
         "PurchaserName": "深圳星辰集团",
-        "PurchaserRegisterNum": "91440300MA5F1CT001",
+        "PurchaserRegisterNum": "9144030005899241X7",
         "SellerName": "珠海东晟",
-        "SellerRegisterNum": "91440400MA5F1CT101",
+        "SellerRegisterNum": "91330281739477958A",
         "TotalAmount": "100.00",
         "TotalTax": "13.00",
         "AmountInFiguers": "113.00",
@@ -286,6 +294,7 @@ def test_duplicate_check_spans_multiple_files_in_same_batch(
     client = invoice_app.app.test_client()
     with client.session_transaction() as sess:
         sess["is_admin"] = True
+        sess["_csrf_token"] = "csrf-test"
 
     first = client.post(
         "/api/recognize",
@@ -294,6 +303,7 @@ def test_duplicate_check_spans_multiple_files_in_same_batch(
             "batch_action": "reset",
         },
         content_type="multipart/form-data",
+        headers={"X-CSRF-Token": "csrf-test"},
     ).get_json()["items"][0]
     second = client.post(
         "/api/recognize",
@@ -301,6 +311,7 @@ def test_duplicate_check_spans_multiple_files_in_same_batch(
             "file": (BytesIO(b"\x89PNG\r\n\x1a\nsecond"), "second.png"),
         },
         content_type="multipart/form-data",
+        headers={"X-CSRF-Token": "csrf-test"},
     ).get_json()["items"][0]
     assert first["_control"]["status"] != "duplicate"
     assert second["_control"]["status"] == "duplicate"
@@ -320,8 +331,159 @@ def test_pending_record_cannot_be_exported(tmp_path, monkeypatch):
     client = invoice_app.app.test_client()
     with client.session_transaction() as sess:
         sess["is_admin"] = True
+        sess["_csrf_token"] = "csrf-test"
 
-    blocked = client.post("/api/export/excel", json={"record_ids": [pending_id]})
+    blocked = client.post(
+        "/api/export/excel",
+        json={"record_ids": [pending_id]},
+        headers={"X-CSRF-Token": "csrf-test"},
+    )
     assert blocked.status_code == 400
-    allowed = client.post("/api/export/excel", json={"record_ids": [auto_id]})
+    allowed = client.post(
+        "/api/export/excel",
+        json={"record_ids": [auto_id]},
+        headers={"X-CSRF-Token": "csrf-test"},
+    )
     assert allowed.status_code == 200
+
+
+def test_same_source_uses_ocr_cache_but_creates_new_audit_record(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "cache.db")
+    monkeypatch.setattr(config, "REQUIRE_QR_FOR_AUTO_PASS", False)
+    storage.init_db()
+    content = b"\x89PNG\r\n\x1a\ncached"
+    source_sha = hashlib.sha256(content).hexdigest()
+    source_path = storage.save_source(content, ".png", source_sha)
+    data = {
+        "InvoiceNum": "24442000000000000555",
+        "InvoiceDate": "2026年07月30日",
+        "PurchaserName": "深圳星辰集团",
+        "SellerName": "珠海东晟",
+        "TotalAmount": "100.00",
+        "TotalTax": "13.00",
+        "AmountInFiguers": "113.00",
+    }
+    storage.add_record(
+        data,
+        source_sha256=source_sha,
+        source_filename="cached.png",
+        source_path=source_path,
+        source_page=1,
+    )
+    monkeypatch.setattr(invoice_app.ocr, "estimate_units", lambda *_: 1)
+    monkeypatch.setattr(
+        invoice_app.ocr,
+        "recognize_bytes",
+        lambda *_: (_ for _ in ()).throw(AssertionError("不应重复调用 OCR")),
+    )
+    client = invoice_app.app.test_client()
+    with client.session_transaction() as sess:
+        sess["is_admin"] = True
+        sess["_csrf_token"] = "csrf-test"
+
+    response = client.post(
+        "/api/recognize",
+        data={
+            "file": (BytesIO(content), "cached.png"),
+            "batch_action": "reset",
+        },
+        content_type="multipart/form-data",
+        headers={"X-CSRF-Token": "csrf-test"},
+    )
+    assert response.status_code == 200
+    assert response.get_json()["items"][0]["_cache_hit"] is True
+    assert storage.count() == 2
+
+
+def test_single_page_rerun_preserves_first_raw_ocr(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "rerun.db")
+    monkeypatch.setattr(config, "REQUIRE_QR_FOR_AUTO_PASS", False)
+    storage.init_db()
+    content = b"\x89PNG\r\n\x1a\nsource"
+    source_sha = hashlib.sha256(content).hexdigest()
+    source_path = storage.save_source(content, ".png", source_sha)
+    original = {
+        "InvoiceNum": "24442000000000000999",
+        "InvoiceDate": "2026年07月30日",
+        "PurchaserName": "深圳星辰集团",
+        "SellerName": "珠海东晟",
+        "TotalAmount": "100.00",
+        "TotalTax": "13.00",
+        "AmountInFiguers": "113.00",
+    }
+    rid = storage.add_record(
+        original,
+        source_sha256=source_sha,
+        source_filename="source.png",
+        source_path=source_path,
+        source_page=1,
+    )
+    corrected_num = "24442000000000000666"
+    monkeypatch.setattr(
+        invoice_app.ocr,
+        "recognize_page",
+        lambda *_: {**original, "InvoiceNum": corrected_num},
+    )
+    client = invoice_app.app.test_client()
+    with client.session_transaction() as sess:
+        sess["is_admin"] = True
+        sess["_csrf_token"] = "csrf-test"
+        sess["current_batch_ids"] = [rid]
+
+    response = client.post(
+        f"/api/records/{rid}/rerun",
+        headers={"X-CSRF-Token": "csrf-test"},
+    )
+    assert response.status_code == 200
+    record = storage.get_by_id(rid)
+    assert record["original_data"]["InvoiceNum"] == original["InvoiceNum"]
+    assert record["data"]["InvoiceNum"] == corrected_num
+    assert any(
+        event["action"] == "re_recognized"
+        for event in storage.get_review_events(rid)
+    )
+
+
+def test_human_can_override_detail_mismatch_with_mandatory_note(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "override.db")
+    monkeypatch.setattr(config, "REQUIRE_QR_FOR_AUTO_PASS", False)
+    storage.init_db()
+    data = {
+        "InvoiceNum": "24442000000000000333",
+        "InvoiceDate": "2026年07月30日",
+        "PurchaserName": "深圳星辰集团",
+        "SellerName": "珠海东晟",
+        "TotalAmount": "100.00",
+        "TotalTax": "13.00",
+        "AmountInFiguers": "113.00",
+        "CommodityAmount": [{"row": "1", "word": "90.00"}],
+        "CommodityTax": [{"row": "1", "word": "11.70"}],
+        "CommodityTaxRate": [{"row": "1", "word": "13%"}],
+    }
+    control = validate_invoice(data)
+    review = assess_review(data, control)
+    rid = storage.add_record(data, validation=control, review=review)
+    client = invoice_app.app.test_client()
+    with client.session_transaction() as sess:
+        sess["is_admin"] = True
+        sess["_csrf_token"] = "csrf-test"
+
+    form = {
+        "_csrf_token": "csrf-test",
+        "action": "approve",
+        **{key: data.get(key, "") for key, _ in config.REVIEW_FIELDS},
+    }
+    denied = client.post(f"/admin/review/{rid}", data=form)
+    assert denied.status_code == 200
+    assert "必须填写复核依据" in denied.get_data(as_text=True)
+
+    approved = client.post(
+        f"/admin/review/{rid}",
+        data={**form, "review_note": "已逐行核对原票，OCR明细漏行"},
+    )
+    assert approved.status_code == 302
+    assert storage.get_by_id(rid)["review_status"] == "approved"

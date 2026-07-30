@@ -89,10 +89,12 @@
                 </div>
                 <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                     <a href="/admin/export/history" class="btn btn-primary">📊 导出Excel</a>
-                    <form method="post" action="/admin/clear" onsubmit="return confirm('确定要清空所有历史记录吗？此操作不可恢复！');">
-                        <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
-                        <button type="submit" class="btn btn-danger">🗑️ 清空所有记录</button>
-                    </form>
+                    {% if destructive_clear_enabled %}
+                        <form method="post" action="/admin/clear" onsubmit="return confirm('确定要清空所有历史记录吗？此操作不可恢复！');">
+                            <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+                            <button type="submit" class="btn btn-danger">🗑️ 清空所有记录</button>
+                        </form>
+                    {% endif %}
                 </div>
             </div>
             <div style="padding: 12px 16px; border-bottom: 1px solid #e2e8f0;">

@@ -5,3 +5,6 @@ openpyxl
 PyMuPDF
 waitress
 python-dotenv
+opencv-python-headless
+numpy
+Pillow

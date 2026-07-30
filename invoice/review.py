@@ -33,13 +33,13 @@ def _normalized(value: str) -> str:
     return re.sub(r"\s+", "", str(value or "")).upper()
 
 
-def _sampled(source_sha256: str, rate: float) -> bool:
-    """用文件哈希做确定性抽样，同一文件每次进入相同分组。"""
-    if not source_sha256 or rate <= 0:
+def _sampled(sample_key: str, rate: float) -> bool:
+    """按单张发票做确定性抽样，同一张发票每次进入相同分组。"""
+    if not sample_key or rate <= 0:
         return False
     if rate >= 1:
         return True
-    bucket = int(hashlib.sha256(source_sha256.encode()).hexdigest()[:8], 16)
+    bucket = int(hashlib.sha256(sample_key.encode()).hexdigest()[:8], 16)
     return bucket / 0xFFFFFFFF < rate
 
 
@@ -49,11 +49,14 @@ def assess_review(
     *,
     duplicate: bool = False,
     source_sha256: str = "",
+    source_page: int | None = None,
 ) -> dict:
     """生成机器预审结果，决定自动通过或进入人工复核队列。"""
     checks: dict[str, dict] = {}
     hard_reasons: list[str] = []
     soft_reasons: list[str] = []
+    quality = data.get("_quality") or {}
+    qr = data.get("_qr") or {}
 
     for key, label in config.REVIEW_FIELDS:
         value = field(data, key).strip()
@@ -113,6 +116,21 @@ def assess_review(
             hard_reasons.append(error)
     soft_reasons.extend(control.get("warnings", []))
 
+    hard_reasons.extend(
+        reason for reason in quality.get("errors", [])
+        if reason not in hard_reasons
+    )
+    soft_reasons.extend(
+        reason for reason in quality.get("warnings", [])
+        if reason not in soft_reasons
+    )
+    if qr.get("status") == "mismatch":
+        hard_reasons.append(qr.get("message") or "二维码与 OCR 字段不一致")
+    elif config.REQUIRE_QR_FOR_AUTO_PASS and qr.get("status") != "verified":
+        soft_reasons.append(
+            qr.get("message") or "未完成二维码与 OCR 交叉验证"
+        )
+
     threshold = _decimal(config.HIGH_VALUE_REVIEW_AMOUNT) or Decimal("100000")
     total_value = total if total is not None else (
         amount + tax if amount is not None and tax is not None else None
@@ -122,7 +140,12 @@ def assess_review(
 
     sampled = False
     if not hard_reasons and not soft_reasons:
-        sampled = _sampled(source_sha256, config.REVIEW_SAMPLE_RATE)
+        sample_key = "|".join((
+            source_sha256,
+            str(source_page or data.get("_source_page") or ""),
+            invoice_num,
+        ))
+        sampled = _sampled(sample_key, config.REVIEW_SAMPLE_RATE)
         if sampled:
             soft_reasons.append("命中自动通过结果的抽样质检")
 
@@ -146,6 +169,7 @@ def assess_review(
     }[review_status]
 
     return {
+        "policy_version": "3.1",
         "review_status": review_status,
         "risk_level": risk_level,
         "evidence_grade": evidence_grade,
@@ -154,6 +178,33 @@ def assess_review(
         "sampled": sampled,
         "reasons": reasons,
         "field_checks": checks,
+        "evidence_label": "规则证据",
+        "evidence_channels": {
+            "ocr": {
+                "status": "completed",
+                "label": "OCR 字段提取",
+            },
+            "image_quality": {
+                "status": quality.get("status", "unavailable"),
+                "label": "图像质量门禁",
+                "detail": quality.get("metrics", {}),
+            },
+            "qr_crosscheck": {
+                "status": qr.get("status", "unavailable"),
+                "label": "二维码交叉验证",
+                "matches": qr.get("matches", []),
+                "mismatches": qr.get("mismatches", []),
+            },
+            "business_rules": {
+                "status": "pass" if control.get("status") == "pass" else "review",
+                "label": "票面与财务规则",
+                "detail": control.get("checks", {}),
+            },
+            "tax_authenticity": {
+                "status": "not_connected",
+                "label": "税务验真（暂未接入）",
+            },
+        },
         "message": message,
         "authenticity_checked": False,
     }

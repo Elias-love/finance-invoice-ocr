@@ -26,7 +26,7 @@ import config
 from invoice import ocr, storage
 from invoice.extract import field
 from invoice.review import assess_review
-from invoice.validate import validate_invoice
+from invoice.validate import manual_approval_blockers, validate_invoice
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,6 +47,7 @@ def create_app() -> Flask:
     storage.init_db()
     # 升级前的演示台账没有 review_json；启动时按当前确定性规则补齐，
     # 让旧数据也能进入新的分流看板。原始 OCR JSON 保持不变。
+    source_cache: dict[str, bytes] = {}
     for record in storage.get_all(newest_first=False):
         if not record.get("review"):
             control = record.get("validation") or validate_invoice(record["data"])
@@ -54,10 +55,57 @@ def create_app() -> Flask:
                 record["data"],
                 control,
                 source_sha256=record.get("source_sha256") or "",
+                source_page=record.get("source_page"),
             )
             storage.initialize_review_metadata(
                 record["id"], validation=control, review=review
             )
+        elif (
+            record["review"].get("policy_version") != "3.1"
+            and record.get("source_path")
+        ):
+            # 旧记录无需再次付费 OCR：从已保存原票重算图像质量和二维码证据。
+            try:
+                source_path = Path(record["source_path"]).resolve()
+                allowed_dir = (config.DB_PATH.parent / "uploads").resolve()
+                if source_path.parent != allowed_dir or not source_path.exists():
+                    continue
+                cache_key = str(source_path)
+                if cache_key not in source_cache:
+                    source_cache[cache_key] = source_path.read_bytes()
+                source_bytes = source_cache[cache_key]
+                enriched = ocr.enrich_local_evidence(
+                    source_bytes,
+                    record.get("source_filename") or source_path.name,
+                    int(record.get("source_page") or 1),
+                    record["data"],
+                )
+                control = validate_invoice(enriched)
+                review = assess_review(
+                    enriched,
+                    control,
+                    source_sha256=record.get("source_sha256") or "",
+                    source_page=record.get("source_page"),
+                )
+                if record["review_status"] in {"approved", "rejected"}:
+                    review = {
+                        **review,
+                        "review_status": record["review_status"],
+                        "message": record["review"].get("message")
+                        or (
+                            "人工复核通过"
+                            if record["review_status"] == "approved"
+                            else "人工复核驳回"
+                        ),
+                    }
+                storage.refresh_machine_metadata(
+                    record["id"],
+                    current_data=enriched,
+                    validation=control,
+                    review=review,
+                )
+            except Exception:
+                logger.exception("历史记录 #%s 本地证据升级失败", record["id"])
     _register_routes(app)
 
     @app.context_processor
@@ -65,6 +113,24 @@ def create_app() -> Flask:
         if "_csrf_token" not in session:
             session["_csrf_token"] = secrets.token_urlsafe(32)
         return {"csrf_token": session["_csrf_token"]}
+
+    @app.after_request
+    def security_headers(response):
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+        response.headers.setdefault("Referrer-Policy", "same-origin")
+        response.headers.setdefault(
+            "Permissions-Policy",
+            "camera=(), microphone=(), geolocation=()",
+        )
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; img-src 'self' data: blob:; "
+            "style-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline'; object-src 'none'; "
+            "base-uri 'self'; frame-ancestors 'self'",
+        )
+        return response
 
     return app
 
@@ -76,6 +142,10 @@ def _admin_required(f):
             return redirect(url_for("admin_login"))
         return f(*args, **kwargs)
     return wrapper
+
+
+def _current_operator() -> str:
+    return session.get("username") or config.ADMIN_USERNAME
 
 
 def _api_admin_required(f):
@@ -213,21 +283,28 @@ def _register_routes(app: Flask):
     def admin_login():
         if request.method == "POST":
             _verify_csrf()
-            valid_user = hmac.compare_digest(
-                request.form.get("username", ""), config.ADMIN_USERNAME
+            submitted_user = request.form.get("username", "")
+            submitted_password = request.form.get("password", "")
+            accounts = (
+                (config.ADMIN_USERNAME, config.ADMIN_PASSWORD, "admin"),
+                (config.REVIEWER_USERNAME, config.REVIEWER_PASSWORD, "reviewer"),
             )
-            valid_password = bool(config.ADMIN_PASSWORD) and hmac.compare_digest(
-                request.form.get("password", ""), config.ADMIN_PASSWORD
-            )
-            if valid_user and valid_password:
-                session["is_admin"] = True
-                return redirect(url_for("admin_dashboard"))
+            for username, password, role in accounts:
+                valid_user = hmac.compare_digest(submitted_user, username)
+                valid_password = bool(password) and hmac.compare_digest(
+                    submitted_password, password
+                )
+                if valid_user and valid_password:
+                    session["is_admin"] = True
+                    session["username"] = username
+                    session["role"] = role
+                    return redirect(url_for("admin_dashboard"))
             return render_template("admin_login.html", error="用户名或密码错误")
         return render_template("admin_login.html", error=None)
 
     @app.route("/admin/logout")
     def admin_logout():
-        session.pop("is_admin", None)
+        session.clear()
         return redirect(url_for("admin_login"))
 
     @app.route("/admin/dashboard")
@@ -248,12 +325,23 @@ def _register_routes(app: Flask):
             approved_count=storage.count_by_review_status("approved"),
             rejected_count=storage.count_by_review_status("rejected"),
             status_filter=status_filter,
+            destructive_clear_enabled=config.ALLOW_DESTRUCTIVE_CLEAR,
         )
 
     @app.route("/admin/clear", methods=["POST"])
     @_admin_required
     def admin_clear():
         _verify_csrf()
+        if session.get("role", "admin") != "admin":
+            abort(403, description="只有管理员可以执行台账管理操作")
+        if not config.ALLOW_DESTRUCTIVE_CLEAR:
+            abort(
+                403,
+                description=(
+                    "安全策略已禁用清空台账；本地演示环境需要显式设置 "
+                    "ALLOW_DESTRUCTIVE_CLEAR=1"
+                ),
+            )
         storage.clear()
         return redirect(url_for("admin_dashboard"))
 
@@ -277,20 +365,43 @@ def _register_routes(app: Flask):
             }
             for key, _label in config.REVIEW_FIELDS:
                 corrected[key] = request.form.get(key, "").strip()
+            for evidence_key in ("_quality", "_qr"):
+                if evidence_key in record["data"]:
+                    corrected[evidence_key] = record["data"][evidence_key]
 
             control = validate_invoice(corrected)
             review = assess_review(
                 corrected,
                 control,
                 source_sha256=record.get("source_sha256") or "",
+                source_page=record.get("source_page"),
             )
-            if action == "approve" and control["status"] != "pass":
-                error = "仍有硬性校验错误，请修正后再通过"
+            review_note = request.form.get("review_note", "").strip()
+            blockers = manual_approval_blockers(corrected)
+            if action in {"approve", "approve_next"} and blockers:
+                error = "关键字段仍不可入账：" + "；".join(blockers)
+            elif (
+                action in {"approve", "approve_next"}
+                and (
+                    control["status"] != "pass"
+                    or review.get("risk_level") == "high"
+                )
+                and not review_note
+            ):
+                error = "覆盖机器硬性异常时必须填写复核依据"
+            elif (
+                action in {"approve", "approve_next"}
+                and config.ENFORCE_MAKER_CHECKER
+                and record.get("user") == _current_operator()
+            ):
+                error = "已启用经办/复核分离，识别经办人不能批准自己的记录"
             else:
                 target = {
                     "save": "pending",
                     "approve": "approved",
+                    "approve_next": "approved",
                     "reject": "rejected",
+                    "reject_next": "rejected",
                 }.get(action)
                 if target is None:
                     abort(400, description="不支持的复核动作")
@@ -310,11 +421,19 @@ def _register_routes(app: Flask):
                     record_id,
                     corrected_data=corrected,
                     review_status=target,
-                    reviewer=config.ADMIN_USERNAME,
-                    note=request.form.get("review_note", "").strip(),
+                    reviewer=_current_operator(),
+                    note=review_note,
                     validation=control,
                     review=review,
                 )
+                if action in {"approve_next", "reject_next"}:
+                    next_id = storage.get_next_pending(record_id)
+                    if next_id:
+                        return redirect(url_for(
+                            "admin_review",
+                            record_id=next_id,
+                            return_to=return_to,
+                        ))
                 return redirect(url_for(
                     "admin_review",
                     record_id=record_id,
@@ -399,6 +518,7 @@ def _register_routes(app: Flask):
     @app.route("/api/recognize", methods=["POST"])
     @_api_admin_required
     def recognize():
+        _verify_csrf()
         if request.form.get("batch_action") == "reset":
             session["current_batch_ids"] = []
             session["current_batch_cleared"] = True
@@ -426,7 +546,13 @@ def _register_routes(app: Flask):
                     "items": [],
                     "error": f"PDF 共 {units} 页，超过单次上限 {config.MAX_PDF_PAGES} 页",
                 }), 400
-            if not _rate_limit_ok(client_key, units=units):
+            source_sha256 = hashlib.sha256(content).hexdigest()
+            cached_records = (
+                []
+                if request.form.get("force") == "1"
+                else storage.get_by_source_sha256(source_sha256)
+            )
+            if not cached_records and not _rate_limit_ok(client_key, units=units):
                 return jsonify({
                     "items": [],
                     "error": (
@@ -435,8 +561,23 @@ def _register_routes(app: Flask):
                     ),
                 }), 429
 
-            source_sha256 = hashlib.sha256(content).hexdigest()
-            results = ocr.recognize_bytes(content, file.filename)
+            if cached_records:
+                results = []
+                for position, cached_record in enumerate(cached_records, start=1):
+                    cached_page = int(
+                        cached_record.get("source_page") or position
+                    )
+                    cached_data = ocr.enrich_local_evidence(
+                        content,
+                        file.filename,
+                        cached_page,
+                        cached_record["original_data"],
+                    )
+                    cached_data["_source_page"] = cached_page
+                    cached_data["_cache_hit"] = True
+                    results.append(cached_data)
+            else:
+                results = ocr.recognize_bytes(content, file.filename)
             source_path = (
                 storage.save_source(content, ext, source_sha256) if results else ""
             )
@@ -451,6 +592,7 @@ def _register_routes(app: Flask):
                 if field(record["data"], "InvoiceNum").strip()
             }
             for result_position, invoice_data in enumerate(results, start=1):
+                cache_hit = bool(invoice_data.pop("_cache_hit", False))
                 source_page = int(
                     invoice_data.pop("_source_page", result_position)
                 )
@@ -470,10 +612,11 @@ def _register_routes(app: Flask):
                     control,
                     duplicate=duplicate,
                     source_sha256=source_sha256,
+                    source_page=source_page,
                 )
                 record_id = storage.add_record(
                     invoice_data,
-                    user=config.ADMIN_USERNAME,
+                    user=_current_operator(),
                     source_sha256=source_sha256,
                     validation=control,
                     review=review,
@@ -487,6 +630,7 @@ def _register_routes(app: Flask):
                 invoice_data["_control"] = control
                 invoice_data["_review"] = review
                 invoice_data["_record_id"] = record_id
+                invoice_data["_cache_hit"] = cache_hit
             new_record_ids = [
                 item["_record_id"] for item in results if item.get("_record_id")
             ]
@@ -505,6 +649,74 @@ def _register_routes(app: Flask):
         except Exception as e:  # 兜底：仍返回明确错误而非空数组
             logger.exception("识别异常")
             return jsonify({"items": [], "error": f"识别异常：{e}"}), 500
+
+    @app.route("/api/records/<int:record_id>/rerun", methods=["POST"])
+    @_api_admin_required
+    def rerun_record(record_id: int):
+        """仅重识别当前记录对应的一页，保留首轮 OCR 和每次尝试轨迹。"""
+        _verify_csrf()
+        record = storage.get_by_id(record_id)
+        if not record or not record.get("source_path"):
+            return jsonify({"error": "找不到该记录的原始凭证"}), 404
+        source_path = Path(record["source_path"]).resolve()
+        allowed_dir = (config.DB_PATH.parent / "uploads").resolve()
+        if source_path.parent != allowed_dir or not source_path.exists():
+            return jsonify({"error": "原始凭证路径不在授权目录"}), 403
+        if not _rate_limit_ok(request.remote_addr or "unknown", units=1):
+            return jsonify({"error": "已达到每分钟 OCR 限额，请稍后重试"}), 429
+
+        try:
+            page_number = int(record.get("source_page") or 1)
+            invoice_data = ocr.recognize_page(
+                source_path.read_bytes(),
+                record.get("source_filename") or source_path.name,
+                page_number,
+            )
+            invoice_data.pop("_source_page", None)
+            control = validate_invoice(invoice_data)
+            current_batch = [
+                item for item in storage.get_by_ids(
+                    session.get("current_batch_ids", [])
+                )
+                if item["id"] != record_id
+            ]
+            seen_invoice_nums = {
+                field(item["data"], "InvoiceNum").strip()
+                for item in current_batch
+                if field(item["data"], "InvoiceNum").strip()
+            }
+            invoice_num = field(invoice_data, "InvoiceNum").strip()
+            duplicate = bool(invoice_num and invoice_num in seen_invoice_nums)
+            if duplicate:
+                control = {
+                    **control,
+                    "status": "duplicate",
+                    "message": "重复发票：本次识别批次存在相同发票号码",
+                }
+            review = assess_review(
+                invoice_data,
+                control,
+                duplicate=duplicate,
+                source_sha256=record.get("source_sha256") or "",
+                source_page=page_number,
+            )
+            invoice_data["_source_page"] = page_number
+            storage.update_recognition_attempt(
+                record_id,
+                invoice_data=invoice_data,
+                actor=_current_operator(),
+                validation=control,
+                review=review,
+            )
+            updated = storage.get_by_id(record_id)
+            item = _record_for_batch(updated)
+            item["_isDuplicate"] = duplicate
+            return jsonify({"item": item, "error": None})
+        except ocr.OcrError as exc:
+            return jsonify({"error": str(exc)}), 502
+        except Exception as exc:
+            logger.exception("单页重识别异常")
+            return jsonify({"error": f"单页重识别异常：{exc}"}), 500
 
     @app.route("/api/current-batch/remove", methods=["POST"])
     @_api_admin_required
@@ -533,6 +745,7 @@ def _register_routes(app: Flask):
     @app.route("/api/export/excel", methods=["POST"])
     @_api_admin_required
     def export_excel():
+        _verify_csrf()
         payload = request.get_json(silent=True) or {}
         records = _exportable_records(payload.get("record_ids", []))
         if not records:
@@ -548,6 +761,7 @@ def _register_routes(app: Flask):
     @app.route("/api/export/csv", methods=["POST"])
     @_api_admin_required
     def export_csv():
+        _verify_csrf()
         payload = request.get_json(silent=True) or {}
         records = _exportable_records(payload.get("record_ids", []))
         if not records:

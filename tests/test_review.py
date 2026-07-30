@@ -1,4 +1,5 @@
 import config
+import invoice.review as review_module
 from invoice.review import assess_review
 from invoice.validate import validate_invoice
 
@@ -10,9 +11,9 @@ VALID = {
     "InvoiceNumConfirm": "24442000000000000001",
     "InvoiceDate": "2026年03月01日",
     "PurchaserName": "深圳星辰集团",
-    "PurchaserRegisterNum": "91440300MA5F1CT001",
+    "PurchaserRegisterNum": "9144030005899241X7",
     "SellerName": "珠海东晟",
-    "SellerRegisterNum": "91440400MA5F1CT101",
+    "SellerRegisterNum": "91330281739477958A",
     "TotalAmount": "1000.00",
     "TotalTax": "130.00",
     "AmountInFiguers": "1130.00",
@@ -22,7 +23,16 @@ VALID = {
 def test_clean_invoice_can_auto_pass(monkeypatch):
     monkeypatch.setattr(config, "AUTO_PASS_ENABLED", True)
     monkeypatch.setattr(config, "REVIEW_SAMPLE_RATE", 0)
-    review = assess_review(VALID, validate_invoice(VALID), source_sha256="abc")
+    data = {
+        **VALID,
+        "_quality": {"status": "pass", "errors": [], "warnings": []},
+        "_qr": {
+            "status": "verified",
+            "matches": ["发票号码", "开票日期", "合计金额"],
+            "mismatches": [],
+        },
+    }
+    review = assess_review(data, validate_invoice(data), source_sha256="abc")
     assert review["review_status"] == "auto_pass"
     assert review["risk_level"] == "low"
     assert review["confidence_score"] is None
@@ -66,3 +76,23 @@ def test_high_value_invoice_requires_review(monkeypatch):
     review = assess_review(data, validate_invoice(data))
     assert review["review_status"] == "pending"
     assert review["risk_level"] == "medium"
+
+
+def test_sampling_key_is_per_invoice_page(monkeypatch):
+    monkeypatch.setattr(config, "REQUIRE_QR_FOR_AUTO_PASS", False)
+    captured = []
+
+    def fake_sampled(key, _rate):
+        captured.append(key)
+        return False
+
+    monkeypatch.setattr(review_module, "_sampled", fake_sampled)
+    assess_review(
+        VALID,
+        validate_invoice(VALID),
+        source_sha256="same-file",
+        source_page=7,
+    )
+    assert captured == [
+        "same-file|7|24442000000000000001"
+    ]

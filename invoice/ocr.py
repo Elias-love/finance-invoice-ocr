@@ -8,6 +8,11 @@ import time
 import requests
 
 import config
+from invoice.evidence import (
+    analyze_image_quality,
+    compare_qr_with_ocr,
+    decode_invoice_qr,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -144,11 +149,34 @@ def ocr_image(image_bytes: bytes) -> dict:
 def estimate_units(file_bytes: bytes, filename: str) -> int:
     """估算一次上传会消耗的 OCR 页数，用于限流和成本控制。"""
     if not (filename or "").lower().endswith(".pdf"):
+        from io import BytesIO
+        from PIL import Image, UnidentifiedImageError
+        try:
+            with Image.open(BytesIO(file_bytes)) as image:
+                if image.width * image.height > config.MAX_RENDER_PIXELS:
+                    raise OcrError(
+                        "图片解码像素数超过安全上限，请压缩后重新上传"
+                    )
+        except UnidentifiedImageError as exc:
+            raise OcrError("图片文件无法安全解码") from exc
         return 1
     import fitz
     try:
         with fitz.open(stream=file_bytes, filetype="pdf") as doc:
+            if doc.needs_pass:
+                raise OcrError("不支持加密 PDF，请解密后重新上传")
+            for page in doc:
+                projected = (
+                    page.rect.width * config.PDF_ZOOM
+                    * page.rect.height * config.PDF_ZOOM
+                )
+                if projected > config.MAX_RENDER_PIXELS:
+                    raise OcrError(
+                        "PDF 页面渲染像素数超过安全上限，请缩小页面后上传"
+                    )
             return len(doc)
+    except OcrError:
+        raise
     except Exception as exc:
         raise OcrError(f"PDF 文件无法读取：{exc}") from exc
 
@@ -174,21 +202,93 @@ def recognize_bytes(file_bytes: bytes, filename: str) -> list[dict]:
                 )
             mat = fitz.Matrix(config.PDF_ZOOM, config.PDF_ZOOM)
             for page_num in range(len(pdf_doc)):
-                pix = pdf_doc[page_num].get_pixmap(matrix=mat)
-                ocr_result = ocr_image(pix.tobytes("png"))
+                pix = pdf_doc[page_num].get_pixmap(matrix=mat, alpha=False)
+                page_bytes = pix.tobytes("png")
+                ocr_result = ocr_image(page_bytes)
                 _collect(
                     ocr_result,
                     results,
                     f"PDF 第 {page_num + 1} 页",
                     source_page=page_num + 1,
+                    image_bytes=page_bytes,
                 )
         finally:
             pdf_doc.close()
     else:
         ocr_result = ocr_image(file_bytes)
-        _collect(ocr_result, results, "图片", source_page=1)
+        _collect(
+            ocr_result,
+            results,
+            "图片",
+            source_page=1,
+            image_bytes=file_bytes,
+        )
 
     return results
+
+
+def recognize_page(file_bytes: bytes, filename: str, page_number: int) -> dict:
+    """只重识别一个来源页，避免多页 PDF 因单页异常整份重复计费。"""
+    filename = (filename or "").lower()
+    if page_number < 1:
+        raise OcrError("来源页码无效")
+    if filename.endswith(".pdf"):
+        import fitz
+
+        with fitz.open(stream=file_bytes, filetype="pdf") as pdf_doc:
+            if page_number > len(pdf_doc):
+                raise OcrError("来源页码超出 PDF 范围")
+            pix = pdf_doc[page_number - 1].get_pixmap(
+                matrix=fitz.Matrix(config.PDF_ZOOM, config.PDF_ZOOM),
+                alpha=False,
+            )
+            image_bytes = pix.tobytes("png")
+    else:
+        if page_number != 1:
+            raise OcrError("图片文件只支持第 1 页")
+        image_bytes = file_bytes
+
+    results: list[dict] = []
+    _collect(
+        ocr_image(image_bytes),
+        results,
+        f"第 {page_number} 页",
+        source_page=page_number,
+        image_bytes=image_bytes,
+    )
+    if not results:
+        raise OcrError(f"第 {page_number} 页未识别到发票内容")
+    return results[0]
+
+
+def enrich_local_evidence(
+    file_bytes: bytes,
+    filename: str,
+    page_number: int,
+    invoice_data: dict,
+) -> dict:
+    """不调用付费 OCR，仅重算图像质量和二维码交叉证据。"""
+    filename = (filename or "").lower()
+    if filename.endswith(".pdf"):
+        import fitz
+
+        with fitz.open(stream=file_bytes, filetype="pdf") as pdf_doc:
+            if page_number < 1 or page_number > len(pdf_doc):
+                raise OcrError("来源页码超出 PDF 范围")
+            pix = pdf_doc[page_number - 1].get_pixmap(
+                matrix=fitz.Matrix(config.PDF_ZOOM, config.PDF_ZOOM),
+                alpha=False,
+            )
+            image_bytes = pix.tobytes("png")
+    else:
+        image_bytes = file_bytes
+    enriched = dict(invoice_data)
+    enriched["_quality"] = analyze_image_quality(image_bytes)
+    enriched["_qr"] = compare_qr_with_ocr(
+        decode_invoice_qr(image_bytes),
+        enriched,
+    )
+    return enriched
 
 
 def _collect(
@@ -197,12 +297,19 @@ def _collect(
     label: str,
     *,
     source_page: int | None = None,
+    image_bytes: bytes | None = None,
 ):
     """把单次 OCR 结果并入 results；遇到百度错误码则抛出 OcrError。"""
     if ocr_result.get("words_result"):
         item = dict(ocr_result["words_result"])
         if source_page is not None:
             item["_source_page"] = source_page
+        if image_bytes:
+            item["_quality"] = analyze_image_quality(image_bytes)
+            item["_qr"] = compare_qr_with_ocr(
+                decode_invoice_qr(image_bytes),
+                item,
+            )
         results.append(item)
         logger.info("%s识别成功", label)
     elif ocr_result.get("error_msg") or ocr_result.get("error_code"):

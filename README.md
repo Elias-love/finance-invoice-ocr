@@ -9,6 +9,18 @@
 
 **本仓库的发票台账数据均为脚本生成的虚构数据（"星辰集团"体系），与任何真实企业无关；OCR 密钥、管理员密码等敏感信息均从环境变量读取，不入库。**
 
+## 界面展示
+
+以下截图用于 GitHub 公开展示，发票号码、公司名和原始票据中的二维码等可识别信息已打码。
+
+![上传与核验口径](docs/images/invoice-upload.png)
+
+![批量识别结果与字段可靠性](docs/images/invoice-results-redacted.png)
+
+![复核队列与风险分流](docs/images/invoice-dashboard-redacted.png)
+
+![人工复核与证据面板](docs/images/invoice-review-redacted.png)
+
 ## 功能
 
 | 功能 | 说明 |

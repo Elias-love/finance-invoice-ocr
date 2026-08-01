@@ -1,5 +1,4 @@
 import config
-import invoice.review as review_module
 from invoice.review import assess_review
 from invoice.validate import validate_invoice
 
@@ -22,7 +21,6 @@ VALID = {
 
 def test_clean_invoice_can_auto_pass(monkeypatch):
     monkeypatch.setattr(config, "AUTO_PASS_ENABLED", True)
-    monkeypatch.setattr(config, "REVIEW_SAMPLE_RATE", 0)
     data = {
         **VALID,
         "_quality": {"status": "pass", "errors": [], "warnings": []},
@@ -38,6 +36,9 @@ def test_clean_invoice_can_auto_pass(monkeypatch):
     }
     review = assess_review(data, validate_invoice(data), source_sha256="abc")
     assert review["review_status"] == "auto_pass"
+    assert review["routing_type"] == "auto_pass"
+    assert review["message"] == "机器预审通过，可直接流转"
+    assert "sampled" not in review
     assert review["risk_level"] == "low"
     assert review["confidence_score"] is None
     assert review["field_reliability"]["InvoiceNum"]["level"] == "high"
@@ -121,7 +122,6 @@ def test_detail_ocr_gap_is_not_invoice_business_risk(monkeypatch):
 
 def test_header_scope_ignores_partial_page_detail_for_risk(monkeypatch):
     monkeypatch.setattr(config, "REQUIRE_QR_FOR_AUTO_PASS", False)
-    monkeypatch.setattr(config, "REVIEW_SAMPLE_RATE", 0)
     data = {
         **VALID,
         "_verification_scope": "header",
@@ -153,40 +153,3 @@ def test_missing_qr_is_evidence_gap_not_invoice_risk():
     assert review["processing_priority"] == "normal"
     assert review["evidence_completeness"] == "partial"
     assert "不代表发票异常" in review["message"]
-
-
-def test_sampling_key_is_per_invoice_page(monkeypatch):
-    monkeypatch.setattr(config, "REQUIRE_QR_FOR_AUTO_PASS", False)
-    captured = []
-
-    def fake_sampled(key, _rate):
-        captured.append(key)
-        return False
-
-    monkeypatch.setattr(review_module, "_sampled", fake_sampled)
-    assess_review(
-        VALID,
-        validate_invoice(VALID),
-        source_sha256="same-file",
-        source_page=7,
-    )
-    assert captured == [
-        "same-file|7|24442000000000000001"
-    ]
-
-
-def test_sample_review_is_explained_as_quality_control(monkeypatch):
-    monkeypatch.setattr(config, "REQUIRE_QR_FOR_AUTO_PASS", False)
-    monkeypatch.setattr(config, "REVIEW_SAMPLE_RATE", 0.05)
-    monkeypatch.setattr(review_module, "_sampled", lambda *_: True)
-    review = assess_review(
-        VALID,
-        validate_invoice(VALID),
-        source_sha256="sampled",
-    )
-    assert review["review_status"] == "pending"
-    assert review["routing_type"] == "sample_review"
-    assert review["business_risk_level"] == "low"
-    assert review["evidence_completeness"] == "complete"
-    assert "5%" in review["message"]
-    assert "非异常" in review["message"]

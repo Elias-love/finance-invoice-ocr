@@ -340,7 +340,7 @@
         <div class="card">
             <div class="system-status {{ 'ready' if ocr_configured else 'unavailable' }}">
                 {% if ocr_configured %}
-                百度 VAT OCR 凭证已配置（首次识别时联网校验）。结果会经过完整性、格式、价税勾稽、重复和抽样规则分流。
+                百度 VAT OCR 凭证已配置（首次识别时联网校验）。结果会经过完整性、格式、价税勾稽、二维码、图像质量、重复和大额规则分流。
                 {% else %}
                 OCR 凭证未配置，当前只能浏览历史台账，无法执行真实识别。
                 {% endif %}

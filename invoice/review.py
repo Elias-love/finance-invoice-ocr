@@ -1,13 +1,12 @@
 """发票机器预审与人工复核分流。
 
 百度标准 VAT OCR 接口没有统一的字段级 probability。本模块只根据可审计的
-确定性证据分级：字段完整性、格式、价税勾稽、辅助校验码、批内重复、大额阈值
-和抽样质检。这里的 ``evidence_grade`` 不是模型置信度，更不是税局验真结果。
+确定性证据分级：字段完整性、格式、价税勾稽、辅助校验码、批内重复和大额阈值。
+这里的 ``evidence_grade`` 不是模型置信度，更不是税局验真结果。
 """
 
 from __future__ import annotations
 
-import hashlib
 import re
 from decimal import Decimal, InvalidOperation
 
@@ -32,16 +31,6 @@ def _decimal(value: str) -> Decimal | None:
 
 def _normalized(value: str) -> str:
     return re.sub(r"\s+", "", str(value or "")).upper()
-
-
-def _sampled(sample_key: str, rate: float) -> bool:
-    """按单张发票做确定性抽样，同一张发票每次进入相同分组。"""
-    if not sample_key or rate <= 0:
-        return False
-    if rate >= 1:
-        return True
-    bucket = int(hashlib.sha256(sample_key.encode()).hexdigest()[:8], 16)
-    return bucket / 0xFFFFFFFF < rate
 
 
 def _field_reliability(
@@ -275,23 +264,6 @@ def assess_review(
     if total_value is not None and abs(total_value) >= threshold:
         policy_reasons.append(f"价税合计达到大额复核阈值 {threshold}")
 
-    sampled = False
-    if not (
-        business_reasons
-        or business_warnings
-        or detail_reasons
-        or evidence_gaps
-        or policy_reasons
-    ):
-        sample_key = "|".join((
-            source_sha256,
-            str(source_page or data.get("_source_page") or ""),
-            invoice_num,
-        ))
-        sampled = _sampled(sample_key, config.REVIEW_SAMPLE_RATE)
-        if sampled:
-            policy_reasons.append("命中自动通过结果的抽样质检")
-
     if business_reasons:
         business_risk_level = "high"
     elif business_warnings:
@@ -336,13 +308,7 @@ def assess_review(
     )
     if review_status == "auto_pass":
         routing_type = "auto_pass"
-        message = "机器预审通过，可直接流转并按策略抽样质检"
-    elif not has_exception and sampled:
-        routing_type = "sample_review"
-        message = (
-            "抽样质检：本票规则校验已通过，按 "
-            f"{config.REVIEW_SAMPLE_RATE:.0%} 策略进入人工质检（非异常）"
-        )
+        message = "机器预审通过，可直接流转"
     elif not has_exception and policy_reasons:
         routing_type = "policy_review"
         message = (
@@ -365,7 +331,7 @@ def assess_review(
         for level in ("high", "medium", "low")
     }
     return {
-        "policy_version": "3.6",
+        "policy_version": "3.7",
         "review_status": review_status,
         "routing_type": routing_type,
         # risk_level 保留给旧数据库/接口，语义调整为“业务风险”。
@@ -378,7 +344,6 @@ def assess_review(
         "detail_integrity": detail_integrity,
         "confidence_type": "deterministic_controls",
         "confidence_score": None,
-        "sampled": sampled,
         "reasons": reasons,
         "reason_groups": {
             "business": business_reasons,

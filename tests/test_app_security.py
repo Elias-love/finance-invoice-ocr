@@ -67,7 +67,6 @@ def test_recognize_requires_login():
 
 def test_review_page_renders_and_approval_is_audited(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "review.db")
-    monkeypatch.setattr(config, "REVIEW_SAMPLE_RATE", 0)
     storage.init_db()
     data = {
         "InvoiceNum": "24442000000000000001",
@@ -230,7 +229,6 @@ def test_empty_legacy_batch_session_recovers_latest_source(
 
 def test_recognize_stores_record_in_current_batch(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "recognized-batch.db")
-    monkeypatch.setattr(config, "REVIEW_SAMPLE_RATE", 0)
     monkeypatch.setattr(config, "REQUIRE_QR_FOR_AUTO_PASS", False)
     storage.init_db()
     monkeypatch.setattr(invoice_app.ocr, "estimate_units", lambda *_: 1)
@@ -280,7 +278,6 @@ def test_duplicate_check_ignores_history_but_flags_current_batch(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "batch-duplicate.db")
-    monkeypatch.setattr(config, "REVIEW_SAMPLE_RATE", 0)
     monkeypatch.setattr(config, "REQUIRE_QR_FOR_AUTO_PASS", False)
     storage.init_db()
     invoice_data = {
@@ -335,7 +332,6 @@ def test_duplicate_check_spans_multiple_files_in_same_batch(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "multi-file-batch.db")
-    monkeypatch.setattr(config, "REVIEW_SAMPLE_RATE", 0)
     monkeypatch.setattr(config, "REQUIRE_QR_FOR_AUTO_PASS", False)
     storage.init_db()
     invoice_data = {

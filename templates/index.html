@@ -43,6 +43,7 @@
             color: #64748b;
             text-decoration: none;
             font-size: 12px;
+            margin-left: 12px;
         }
         .card { 
             background: white; 
@@ -145,6 +146,15 @@
         .system-status.ready { background: #d1fae5; color: #065f46; }
         .system-status.unavailable, .error-box { background: #fee2e2; color: #991b1b; }
         .error-box { display: none; white-space: pre-line; }
+        .scope-note {
+            background: #eff6ff;
+            color: #1e40af;
+            border-radius: 8px;
+            padding: 10px 12px;
+            margin: 0 0 16px;
+            font-size: 13px;
+            line-height: 1.55;
+        }
         .toast {
             position: fixed;
             right: 22px;
@@ -318,6 +328,7 @@
     <div id="operationToast" class="toast info" role="status" aria-live="polite"></div>
     <div class="container">
         <div class="admin-link">
+            <a href="/demo/overview">流程总览</a>
             <a href="/admin">🔐 管理员入口</a>
         </div>
         
@@ -333,6 +344,9 @@
                 {% else %}
                 OCR 凭证未配置，当前只能浏览历史台账，无法执行真实识别。
                 {% endif %}
+            </div>
+            <div class="scope-note">
+                本系统展示 OCR 识别、图像质量门禁、二维码交叉和价税勾稽；税务验真暂未接入，不把本地规则通过等同于税局查验通过。
             </div>
             <div id="errorBox" class="error-box" role="alert"></div>
             <div class="upload-box" onclick="document.getElementById('fileInput').click()">
@@ -615,11 +629,15 @@
                     rejected: '已驳回'
                 }[review.review_status] || '待人工复核';
                 const qualityStatus = {
-                    pass: '图像质量通过',
-                    warning: '图像质量警告',
-                    error: '图像质量不合格',
+                    pass: '图像质量通过，可用于自动预审',
+                    warning: '图像偏弱，建议人工重点核对数字字段',
+                    error: '图像质量不合格，不自动放行',
                     unavailable: '图像质量未检查'
                 }[review.evidence_channels?.image_quality?.status] || '图像质量未检查';
+                const qualityDetail = review.evidence_channels?.image_quality?.detail || {};
+                const qualityMetric = qualityDetail.width && qualityDetail.height
+                    ? `（${Number(qualityDetail.width)}×${Number(qualityDetail.height)}px，清晰度 ${escapeHtml(qualityDetail.blur_score ?? '-')}）`
+                    : '';
                 const qrStatus = {
                     verified: '二维码交叉验证一致',
                     mismatch: '二维码字段冲突',
@@ -660,7 +678,7 @@
                     }[evidence.level] || '-';
                     const explanation = (evidence.reasons || []).join('；')
                         || '暂无证据说明';
-                    return `<span class="reliability-badge reliability-${escapeHtml(evidence.level)}" title="${escapeHtml(explanation)}">可靠性${escapeHtml(levelLabel)}</span>`;
+                    return `<span class="reliability-badge reliability-${escapeHtml(evidence.level)}" title="该字段证据支持：${escapeHtml(explanation)}">交叉证据${escapeHtml(levelLabel)}</span>`;
                 };
                 
                 html += `
@@ -677,9 +695,9 @@
                             · 证据完整度：${escapeHtml({complete:'完整',partial:'部分缺失',insufficient:'不足'}[review.evidence_completeness] || '-')}
                             ${item._record_id ? ` · <a href="/admin/review/${Number(item._record_id)}?return_to=%2F">进入人工复核</a>` : ''}
                             <div class="evidence-line">
-                                ${escapeHtml(qualityStatus)} · ${escapeHtml(qrStatus)}
+                                ${escapeHtml(qualityStatus)}${qualityMetric} · ${escapeHtml(qrStatus)}
                                 · ${escapeHtml(detailLabel)}
-                                · 字段可靠性是交叉证据等级，不是模型概率
+                                · 字段证据等级不是模型概率
                                 ${item._cache_hit ? ' · 已复用历史识别缓存，未重复调用付费 OCR' : ''}
                             </div>
                         </div>

@@ -112,7 +112,7 @@
                 </div>
                 {% set reliability_summary = record.review.get('field_reliability_summary', {}) %}
                 <div class="reliability-overview">
-                    <strong>字段可靠性：</strong>
+                    <strong>字段交叉证据：</strong>
                     高 {{ reliability_summary.get('high', 0) }} 项 ·
                     中 {{ reliability_summary.get('medium', 0) }} 项 ·
                     低 {{ reliability_summary.get('low', 0) }} 项。
@@ -133,8 +133,23 @@
                         <div class="evidence-card {{ channel.status or 'unavailable' }}">
                             <strong>{{ channel.label or channel_labels.get(key, key) }}</strong>
                             {% if key == 'image_quality' and channel.detail %}
-                                {{ channel.status }} · {{ channel.detail.width }}×{{ channel.detail.height }}px
+                                {% if channel.status == 'pass' %}
+                                    通过，可用于自动预审
+                                {% elif channel.status == 'warning' %}
+                                    偏弱，建议人工重点核对数字字段
+                                {% elif channel.status == 'error' %}
+                                    不合格，不自动放行
+                                {% else %}
+                                    未检查
+                                {% endif %}
+                                · {{ channel.detail.width }}×{{ channel.detail.height }}px
                                 · 清晰度 {{ channel.detail.blur_score }}
+                                {% if channel.detail.brightness is defined %}
+                                    · 亮度 {{ channel.detail.brightness }}
+                                {% endif %}
+                                {% if channel.detail.contrast is defined %}
+                                    · 对比度 {{ channel.detail.contrast }}
+                                {% endif %}
                             {% elif key == 'qr_crosscheck' %}
                                 {% if channel.status == 'unavailable' %}
                                     证据未取得，不代表发票异常
@@ -191,14 +206,14 @@
                                     {{ label }}
                                     {% if reliability.level %}
                                     <span class="reliability-badge reliability-{{ reliability.level }}">
-                                        可靠性{{ {'high':'高','medium':'中','low':'低'}.get(reliability.level, '-') }}
+                                        交叉证据{{ {'high':'高','medium':'中','low':'低'}.get(reliability.level, '-') }}
                                     </span>
                                     {% endif %}
                                 </label>
                                 <input id="{{ key }}" name="{{ key }}" value="{{ record.data.get(key, '') }}">
                                 <div class="reason">{{ check.reason or '等待复核' }}</div>
                                 {% if reliability.reasons %}
-                                <div class="reliability-reason">可靠性依据：{{ reliability.reasons|join('；') }}</div>
+                                <div class="reliability-reason">证据依据：{{ reliability.reasons|join('；') }}</div>
                                 {% endif %}
                                 {% if record.original_data.get(key, '') != record.data.get(key, '') %}
                                 <div class="original">OCR 原值：{{ record.original_data.get(key, '') or '空' }}</div>

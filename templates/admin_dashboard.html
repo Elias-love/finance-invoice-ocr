@@ -19,6 +19,11 @@
         .stat-card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
         .stat-card h3 { margin: 0 0 8px 0; color: #64748b; font-size: 14px; }
         .stat-card .value { font-size: 32px; font-weight: 700; color: #1e293b; }
+        .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 20px; }
+        .metric-card { background: white; border-left: 4px solid #0f52ba; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); padding: 14px 16px; }
+        .metric-card h3 { margin: 0 0 7px; color: #475569; font-size: 13px; }
+        .metric-card .value { font-size: 26px; font-weight: 700; color: #0f172a; }
+        .metric-card p { margin: 6px 0 0; color: #64748b; font-size: 12px; line-height: 1.5; }
         .table-card { background: white; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); overflow: hidden; }
         .table-header { padding: 16px; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
         .table-header h2 { margin: 0; font-size: 18px; }
@@ -53,6 +58,7 @@
         <div class="header">
             <h1>📊 管理后台</h1>
             <div class="header-actions">
+                <a href="/demo/overview" class="btn btn-primary">流程总览</a>
                 <a href="/" class="btn btn-primary">← 返回首页</a>
                 <a href="/admin/logout" class="btn btn-primary">退出登录</a>
             </div>
@@ -78,6 +84,34 @@
             <div class="stat-card">
                 <h3>人工已通过 / 已驳回</h3>
                 <div class="value">{{ approved_count }} / {{ rejected_count }}</div>
+            </div>
+        </div>
+
+        <div class="metric-grid">
+            <div class="metric-card">
+                <h3>机器预审自动通过率</h3>
+                <div class="value">{{ dashboard_metrics.auto_pass_rate }}%</div>
+                <p>规则、二维码、图像质量和证据完整度均满足时才自动通过。</p>
+            </div>
+            <div class="metric-card">
+                <h3>人工触碰率</h3>
+                <div class="value">{{ dashboard_metrics.human_touch_rate }}%</div>
+                <p>包含异常复核、大额审批、抽样质检和人工已处理记录。</p>
+            </div>
+            <div class="metric-card">
+                <h3>二维码交叉一致率</h3>
+                <div class="value">{{ dashboard_metrics.qr_verified_rate }}%</div>
+                <p>二维码与 OCR 的发票号码、日期或金额形成独立证据。</p>
+            </div>
+            <div class="metric-card">
+                <h3>图像质量通过率</h3>
+                <div class="value">{{ dashboard_metrics.image_pass_rate }}%</div>
+                <p>短边像素、清晰度、亮度和对比度达到自动预审要求。</p>
+            </div>
+            <div class="metric-card">
+                <h3>字段证据覆盖率</h3>
+                <div class="value">{{ dashboard_metrics.field_supported_rate }}%</div>
+                <p>关键字段达到高/中证据等级，不把规则结果冒充模型概率。</p>
             </div>
         </div>
 

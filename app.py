@@ -11,7 +11,7 @@ import hmac
 import logging
 import secrets
 import time
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from datetime import datetime
 from functools import wraps
 from io import BytesIO
@@ -239,6 +239,59 @@ def _record_for_batch(record: dict) -> dict:
     return item
 
 
+def _pct(part: int, total: int) -> str:
+    if not total:
+        return "0.0"
+    return f"{part * 100 / total:.1f}"
+
+
+def _dashboard_metrics(records: list[dict]) -> dict:
+    """汇总演示/试点更关心的自动化、证据和质量指标。"""
+    total = len(records)
+    statuses = Counter(record.get("review_status") for record in records)
+    routing = Counter()
+    qr = Counter()
+    quality = Counter()
+    reliability = Counter()
+    high_or_medium_fields = 0
+    all_fields = 0
+
+    for record in records:
+        review = record.get("review") or {}
+        channels = review.get("evidence_channels") or {}
+        routing[review.get("routing_type") or "unknown"] += 1
+        qr_status = (
+            channels.get("qr_crosscheck", {}).get("status")
+            or "unavailable"
+        )
+        quality_status = (
+            channels.get("image_quality", {}).get("status")
+            or "unavailable"
+        )
+        qr[qr_status] += 1
+        quality[quality_status] += 1
+
+        for item in (review.get("field_reliability") or {}).values():
+            level = item.get("level") or "unknown"
+            reliability[level] += 1
+            all_fields += 1
+            if level in {"high", "medium"}:
+                high_or_medium_fields += 1
+
+    reviewed = statuses["pending"] + statuses["approved"] + statuses["rejected"]
+    return {
+        "auto_pass_rate": _pct(statuses["auto_pass"], total),
+        "human_touch_rate": _pct(reviewed, total),
+        "qr_verified_rate": _pct(qr["verified"], total),
+        "image_pass_rate": _pct(quality["pass"], total),
+        "field_supported_rate": _pct(high_or_medium_fields, all_fields),
+        "routing": dict(routing),
+        "qr": dict(qr),
+        "quality": dict(quality),
+        "reliability": dict(reliability),
+    }
+
+
 def _current_batch_records() -> list[dict]:
     """读取当前会话的识别批次，并清理已不存在的记录 ID。"""
     requested_ids = session.get("current_batch_ids", [])
@@ -311,7 +364,8 @@ def _register_routes(app: Flask):
     @_admin_required
     def admin_dashboard():
         status_filter = request.args.get("status", "").strip()
-        records = storage.get_all(newest_first=True)
+        all_records = storage.get_all(newest_first=True)
+        records = all_records
         if status_filter in {"pending", "auto_pass", "approved", "rejected"}:
             records = [r for r in records if r["review_status"] == status_filter]
         today = datetime.now().strftime("%Y-%m-%d")
@@ -324,8 +378,19 @@ def _register_routes(app: Flask):
             auto_pass_count=storage.count_by_review_status("auto_pass"),
             approved_count=storage.count_by_review_status("approved"),
             rejected_count=storage.count_by_review_status("rejected"),
+            dashboard_metrics=_dashboard_metrics(all_records),
             status_filter=status_filter,
             destructive_clear_enabled=config.ALLOW_DESTRUCTIVE_CLEAR,
+        )
+
+    @app.route("/demo/overview")
+    @_admin_required
+    def demo_overview():
+        records = storage.get_all(newest_first=True)
+        return render_template(
+            "demo_overview.html",
+            dashboard_metrics=_dashboard_metrics(records),
+            total_count=len(records),
         )
 
     @app.route("/admin/clear", methods=["POST"])

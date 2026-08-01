@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>流程总览</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { margin: 0; background: #eef3f8; color: #1e293b; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+        .container { max-width: 1180px; margin: 0 auto; padding: 20px; }
+        .header { background: linear-gradient(135deg, #0f52ba 0%, #1e88e5 100%); color: white; border-radius: 12px; padding: 22px 24px; display: flex; justify-content: space-between; gap: 16px; align-items: center; flex-wrap: wrap; margin-bottom: 18px; }
+        .header h1 { margin: 0; font-size: 24px; }
+        .header p { margin: 6px 0 0; opacity: .9; font-size: 14px; }
+        .header a { background: white; color: #0f52ba; border-radius: 8px; padding: 10px 15px; text-decoration: none; font-size: 14px; }
+        .section { background: white; border-radius: 12px; box-shadow: 0 2px 8px rgba(15, 23, 42, .08); padding: 18px; margin-bottom: 18px; }
+        .section h2 { margin: 0 0 12px; font-size: 18px; }
+        .muted { color: #64748b; font-size: 13px; line-height: 1.65; }
+        .flow { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; }
+        .flow-step { border: 1px solid #dbe3ec; border-radius: 8px; padding: 12px; min-height: 120px; }
+        .flow-step strong { display: block; color: #0f52ba; margin-bottom: 7px; }
+        .flow-step p { margin: 0; color: #64748b; font-size: 12px; line-height: 1.55; }
+        .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
+        .metric { border-left: 4px solid #0f52ba; background: #f8fafc; border-radius: 8px; padding: 12px; }
+        .metric span { display: block; color: #64748b; font-size: 12px; margin-bottom: 5px; }
+        .metric strong { font-size: 24px; }
+        .scenario-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; }
+        .scenario { border: 1px solid #dbe3ec; border-radius: 8px; padding: 13px; }
+        .scenario h3 { margin: 0 0 8px; font-size: 15px; }
+        .scenario .tag { display: inline-block; border-radius: 999px; padding: 3px 8px; font-size: 12px; font-weight: 650; margin-bottom: 8px; }
+        .tag-pass { background: #d1fae5; color: #047857; }
+        .tag-review { background: #fef3c7; color: #92400e; }
+        .tag-error { background: #fee2e2; color: #b91c1c; }
+        .scenario p { margin: 5px 0; color: #475569; font-size: 13px; line-height: 1.55; }
+        .split { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+        .checklist { margin: 0; padding-left: 18px; color: #475569; font-size: 13px; line-height: 1.75; }
+        @media (max-width: 900px) {
+            .flow { grid-template-columns: repeat(2, 1fr); }
+            .split { grid-template-columns: 1fr; }
+        }
+        @media (max-width: 560px) {
+            .container { padding: 12px; }
+            .flow { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div>
+                <h1>发票 OCR 识别与复核流程总览</h1>
+                <p>展示口径：票头必要字段、二维码交叉、价税勾稽、图像质量门禁、人工复核闭环。</p>
+            </div>
+            <div>
+                <a href="/">返回识别页</a>
+                <a href="/admin/dashboard">管理后台</a>
+            </div>
+        </div>
+
+        <section class="section">
+            <h2>业务流程</h2>
+            <div class="flow">
+                <div class="flow-step">
+                    <strong>1. 上传</strong>
+                    <p>支持 PDF 和图片；默认票头模式，适合多页发票只上传包含票头的一页。</p>
+                </div>
+                <div class="flow-step">
+                    <strong>2. 本地质量检查</strong>
+                    <p>检查像素、清晰度、亮度和对比度；质量差时不自动放行。</p>
+                </div>
+                <div class="flow-step">
+                    <strong>3. VAT OCR</strong>
+                    <p>调用百度 VAT OCR 提取发票号码、日期、购销方、金额和税额。</p>
+                </div>
+                <div class="flow-step">
+                    <strong>4. 交叉验证</strong>
+                    <p>用二维码、辅助校验、统一社会信用代码校验位和价税勾稽做证据支持。</p>
+                </div>
+                <div class="flow-step">
+                    <strong>5. 机器分流</strong>
+                    <p>区分业务风险、证据完整度和处理优先级；大额复核不是识别异常。</p>
+                </div>
+                <div class="flow-step">
+                    <strong>6. 复核与导出</strong>
+                    <p>人工修正保留原值和轨迹；通过后进入受控导出。</p>
+                </div>
+            </div>
+        </section>
+
+        <section class="section">
+            <h2>当前演示指标</h2>
+            <p class="muted">以下指标来自本地演示台账，用于说明系统验收口径，不代表生产环境 OCR 准确率。</p>
+            <div class="metrics">
+                <div class="metric"><span>台账记录</span><strong>{{ total_count }}</strong></div>
+                <div class="metric"><span>机器预审自动通过率</span><strong>{{ dashboard_metrics.auto_pass_rate }}%</strong></div>
+                <div class="metric"><span>人工触碰率</span><strong>{{ dashboard_metrics.human_touch_rate }}%</strong></div>
+                <div class="metric"><span>二维码交叉一致率</span><strong>{{ dashboard_metrics.qr_verified_rate }}%</strong></div>
+                <div class="metric"><span>图像质量通过率</span><strong>{{ dashboard_metrics.image_pass_rate }}%</strong></div>
+                <div class="metric"><span>字段证据覆盖率</span><strong>{{ dashboard_metrics.field_supported_rate }}%</strong></div>
+            </div>
+        </section>
+
+        <section class="section">
+            <h2>演示样本场景</h2>
+            <div class="scenario-grid">
+                <div class="scenario">
+                    <span class="tag tag-pass">自动通过</span>
+                    <h3>规则全部通过</h3>
+                    <p>关键字段完整，二维码一致，图像质量通过，价税勾稽通过。</p>
+                    <p>处理：机器预审通过，可进入导出或后续入账流程。</p>
+                </div>
+                <div class="scenario">
+                    <span class="tag tag-review">策略复核</span>
+                    <h3>大额发票</h3>
+                    <p>识别规则通过，但价税合计达到大额复核阈值。</p>
+                    <p>处理：进入人工复核；标注为审批策略，不标成识别异常。</p>
+                </div>
+                <div class="scenario">
+                    <span class="tag tag-review">证据缺口</span>
+                    <h3>二维码不可读</h3>
+                    <p>OCR 字段可能正确，但缺少二维码独立证据。</p>
+                    <p>处理：提示证据未取得，不直接判断发票异常。</p>
+                </div>
+                <div class="scenario">
+                    <span class="tag tag-error">业务异常</span>
+                    <h3>本批重复发票号</h3>
+                    <p>同一次上传批次中出现相同发票号码。</p>
+                    <p>处理：进入人工复核，避免重复入账。</p>
+                </div>
+                <div class="scenario">
+                    <span class="tag tag-error">质量异常</span>
+                    <h3>低清晰度或低像素</h3>
+                    <p>图片短边像素或清晰度低，数字字段容易错读。</p>
+                    <p>处理：允许识别，但不自动放行。</p>
+                </div>
+                <div class="scenario">
+                    <span class="tag tag-pass">票头模式</span>
+                    <h3>多页发票单页上传</h3>
+                    <p>只上传包含票头的一页，商品明细不参与默认风险判定。</p>
+                    <p>处理：核验发票号、日期、金额、税额和二维码即可。</p>
+                </div>
+            </div>
+        </section>
+
+        <section class="section">
+            <h2>上线边界</h2>
+            <div class="split">
+                <div>
+                    <p class="muted">当前 demo 已覆盖：</p>
+                    <ul class="checklist">
+                        <li>OCR 识别与批量处理</li>
+                        <li>图像质量门禁与二维码交叉</li>
+                        <li>票头价税勾稽和本批重复检查</li>
+                        <li>人工复核、原值留痕和受控导出</li>
+                    </ul>
+                </div>
+                <div>
+                    <p class="muted">正式上线仍需补齐：</p>
+                    <ul class="checklist">
+                        <li>税务验真或人工验真附件留痕</li>
+                        <li>企业级权限、SSO、任务队列和监控告警</li>
+                        <li>PostgreSQL/对象存储/备份恢复</li>
+                        <li>人工标注样本集与字段级准确率评估</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+    </div>
+</body>
+</html>

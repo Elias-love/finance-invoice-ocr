@@ -18,6 +18,46 @@ def test_file_signature_validation():
     assert not invoice_app._looks_like_allowed_file(b"not a pdf", ".pdf")
 
 
+def test_dashboard_metrics_summarize_evidence_channels():
+    records = [
+        {
+            "review_status": "auto_pass",
+            "review": {
+                "routing_type": "auto_pass",
+                "evidence_channels": {
+                    "qr_crosscheck": {"status": "verified"},
+                    "image_quality": {"status": "pass"},
+                },
+                "field_reliability": {
+                    "InvoiceNum": {"level": "high"},
+                    "SellerName": {"level": "medium"},
+                },
+            },
+        },
+        {
+            "review_status": "pending",
+            "review": {
+                "routing_type": "exception",
+                "evidence_channels": {
+                    "qr_crosscheck": {"status": "unavailable"},
+                    "image_quality": {"status": "warning"},
+                },
+                "field_reliability": {
+                    "InvoiceNum": {"level": "low"},
+                },
+            },
+        },
+    ]
+
+    metrics = invoice_app._dashboard_metrics(records)
+
+    assert metrics["auto_pass_rate"] == "50.0"
+    assert metrics["human_touch_rate"] == "50.0"
+    assert metrics["qr_verified_rate"] == "50.0"
+    assert metrics["image_pass_rate"] == "50.0"
+    assert metrics["field_supported_rate"] == "66.7"
+
+
 def test_recognize_requires_login():
     client = invoice_app.app.test_client()
     response = client.post("/api/recognize")
@@ -68,6 +108,22 @@ def test_review_page_renders_and_approval_is_audited(tmp_path, monkeypatch):
     reviewed = storage.get_by_id(rid)
     assert reviewed["review_status"] == "approved"
     assert reviewed["review"]["review_status"] == "approved"
+
+
+def test_demo_overview_renders_for_logged_in_user(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "overview.db")
+    storage.init_db()
+    client = invoice_app.app.test_client()
+    with client.session_transaction() as sess:
+        sess["is_admin"] = True
+        sess["_csrf_token"] = "csrf-test"
+
+    page = client.get("/demo/overview")
+
+    assert page.status_code == 200
+    body = page.get_data(as_text=True)
+    assert "发票 OCR 识别与复核流程总览" in body
+    assert "演示样本场景" in body
 
 
 def test_current_batch_survives_review_navigation(tmp_path, monkeypatch):
@@ -492,8 +548,8 @@ def test_human_can_override_detail_mismatch_with_mandatory_note(
     assert "必须填写复核依据" in denied.get_data(as_text=True)
     assert "明细OCR完整性需要复核" in denied.get_data(as_text=True)
     assert "票头字段本身可以仍然正确" in denied.get_data(as_text=True)
-    assert "字段可靠性" in denied.get_data(as_text=True)
-    assert "可靠性依据" in denied.get_data(as_text=True)
+    assert "字段交叉证据" in denied.get_data(as_text=True)
+    assert "证据依据" in denied.get_data(as_text=True)
 
     approved = client.post(
         f"/admin/review/{rid}",

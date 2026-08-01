@@ -19,6 +19,8 @@
 
 ![复核队列与风险分流](docs/images/invoice-dashboard-redacted.png)
 
+![管理后台指标与历史队列](docs/images/admin-dashboard-redacted.png)
+
 ![人工复核与证据面板](docs/images/invoice-review-redacted.png)
 
 ## 功能

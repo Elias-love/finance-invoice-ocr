@@ -5,6 +5,7 @@
 # 运行时上传/临时文件
 uploads/
 *.tmp
+logs/
 
 # Python
 __pycache__/

@@ -92,6 +92,13 @@ python app.py                                 # 打开 http://127.0.0.1:5007
 - `access_token` 按百度返回的 `expires_in` 在内存缓存，提前 5 分钟自动刷新；若接口返回 token 过期/无效，自动刷新并重试一次
 - `BAIDU_OCR_PROXY_MODE=auto` 会在系统代理无法连接百度 OCR 时自动直连兜底；也可设为 `direct` 或 `system`
 
+### macOS 本机常驻启动
+
+本地演示可使用 `deploy/macos/com.finance.invoice.ocr.plist` 注册 LaunchAgent，
+登录后自动启动 `http://127.0.0.1:5007`，异常退出时自动拉起。启动脚本为
+`scripts/start_local_server.sh`；实际安装时建议把包装脚本放到用户 Library 目录，
+避免 macOS 后台服务直接执行 Desktop 路径时触发权限限制。
+
 ## 复核策略
 
 标准 VAT OCR 接口返回结构化字段和部分辅助校验字段，但没有统一的字段级

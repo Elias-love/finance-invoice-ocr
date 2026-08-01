@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.finance.invoice.ocr</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/wangshijin/Library/Application Support/FinanceInvoiceOCR/start_local_server.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/wangshijin</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/wangshijin/Library/Logs/FinanceInvoiceOCR/launchd.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/wangshijin/Library/Logs/FinanceInvoiceOCR/launchd.err.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict>
+</plist>

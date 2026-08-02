@@ -61,7 +61,7 @@ def create_app() -> Flask:
                 record["id"], validation=control, review=review
             )
         elif (
-            record["review"].get("policy_version") != "3.7"
+            record["review"].get("policy_version") != "3.8"
             and record.get("source_path")
         ):
             # 旧记录无需再次付费 OCR：从已保存原票重算图像质量和二维码证据。
@@ -106,7 +106,7 @@ def create_app() -> Flask:
                 )
             except Exception:
                 logger.exception("历史记录 #%s 本地证据升级失败", record["id"])
-        elif record["review"].get("policy_version") != "3.7":
+        elif record["review"].get("policy_version") != "3.8":
             # 兼容少数没有保存原始文件路径的旧台账：至少用已落库 OCR 结果
             # 重新套用当前分流策略，避免旧版额外复核状态继续残留在看板。
             control = record.get("validation") or validate_invoice(record["data"])

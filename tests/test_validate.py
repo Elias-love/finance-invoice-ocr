@@ -32,6 +32,13 @@ def test_amount_reconciliation_failure_requires_review():
     assert any("价税合计" in error for error in result["errors"])
 
 
+def test_header_total_must_match_exactly_even_by_one_cent():
+    result = validate_invoice({**VALID, "AmountInFiguers": "1130.01"})
+    assert result["status"] == "review"
+    assert result["checks"]["header_reconciliation"] is False
+    assert any("必须等于价税合计" in error for error in result["errors"])
+
+
 def test_missing_required_field_requires_review():
     result = validate_invoice({**VALID, "SellerName": ""})
     assert result["status"] == "review"
@@ -135,4 +142,10 @@ def test_manual_approval_blockers_only_cover_entry_critical_fields():
     assert any(
         "价税合计" in reason
         for reason in manual_approval_blockers({**VALID, "AmountInFiguers": ""})
+    )
+    assert any(
+        "必须等于价税合计" in reason
+        for reason in manual_approval_blockers(
+            {**VALID, "AmountInFiguers": "1130.01"}
+        )
     )

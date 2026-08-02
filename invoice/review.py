@@ -229,7 +229,7 @@ def assess_review(
     tax = _decimal(field(data, "TotalTax"))
     total = _decimal(field(data, "AmountInFiguers"))
     if amount is not None and tax is not None and total is not None:
-        if abs(amount + tax - total) <= Decimal("0.02"):
+        if control.get("checks", {}).get("header_reconciliation") is True:
             for key in ("TotalAmount", "TotalTax", "AmountInFiguers"):
                 checks[key]["reason"] = "价税勾稽通过"
 
@@ -331,7 +331,7 @@ def assess_review(
         for level in ("high", "medium", "low")
     }
     return {
-        "policy_version": "3.7",
+        "policy_version": "3.8",
         "review_status": review_status,
         "routing_type": routing_type,
         # risk_level 保留给旧数据库/接口，语义调整为“业务风险”。

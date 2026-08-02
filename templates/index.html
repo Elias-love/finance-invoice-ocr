@@ -340,13 +340,13 @@
         <div class="card">
             <div class="system-status {{ 'ready' if ocr_configured else 'unavailable' }}">
                 {% if ocr_configured %}
-                百度 VAT OCR 凭证已配置（首次识别时联网校验）。结果会经过完整性、格式、价税勾稽、二维码、图像质量、重复和大额规则分流。
+                百度 VAT OCR 凭证已配置（首次识别时联网校验）。结果会经过完整性、格式、票头价税等式、二维码、图像质量、重复和大额规则分流。
                 {% else %}
                 OCR 凭证未配置，当前只能浏览历史台账，无法执行真实识别。
                 {% endif %}
             </div>
             <div class="scope-note">
-                本系统展示 OCR 识别、图像质量门禁、二维码交叉和价税勾稽；税务验真暂未接入，不把本地规则通过等同于税局查验通过。
+                本系统展示 OCR 识别、图像质量门禁、二维码交叉和票头价税等式校验；税务验真暂未接入，不把本地规则通过等同于税局查验通过。
             </div>
             <div id="errorBox" class="error-box" role="alert"></div>
             <div class="upload-box" onclick="document.getElementById('fileInput').click()">
@@ -367,7 +367,7 @@
                     <option value="detail">完整明细核验（需提供包含全部明细的完整发票）</option>
                 </select>
                 <div style="font-size:13px; color:#64748b; margin-top:6px;">
-                    票头模式仍核验发票号、日期、购销方、合计金额、合计税额、价税勾稽和二维码；商品明细不参与风险判定。
+                    票头模式仍核验发票号、日期、购销方、二维码，以及“合计金额 + 合计税额 = 价税合计”；商品明细不参与风险判定。
                 </div>
             </div>
             

@@ -97,6 +97,20 @@ def _validate_line_tax(data: dict, tolerance: Decimal) -> list[str]:
     return warnings
 
 
+def _header_reconciles(
+    amount: Decimal | None,
+    tax: Decimal | None,
+    total: Decimal | None,
+) -> bool:
+    """票头合计字段必须严格相等：合计金额 + 合计税额 = 价税合计。"""
+    return (
+        amount is not None
+        and tax is not None
+        and total is not None
+        and amount + tax == total
+    )
+
+
 def _money_text(value: Decimal | None) -> str | None:
     return format(value, ".2f") if value is not None else None
 
@@ -178,7 +192,10 @@ def validate_invoice(data: dict) -> dict:
     amount = _decimal(field(data, "TotalAmount"))
     tax = _decimal(field(data, "TotalTax"))
     total = _decimal(field(data, "AmountInFiguers"))
-    tolerance = _decimal(config.RECONCILIATION_TOLERANCE) or Decimal("0.01")
+    detail_tolerance = (
+        _decimal(config.DETAIL_RECONCILIATION_TOLERANCE) or Decimal("0.01")
+    )
+    header_reconciles = _header_reconciles(amount, tax, total)
     if amount is None or tax is None:
         errors.append("金额或税额不是有效数字")
     elif amount * tax < 0:
@@ -186,8 +203,8 @@ def validate_invoice(data: dict) -> dict:
     if total is not None and amount is not None and tax is not None:
         if (amount + tax < 0) != (total < 0):
             errors.append("价税合计与金额/税额正负方向不一致")
-        if abs((amount + tax) - total) > tolerance:
-            errors.append("价税合计与金额+税额不一致")
+        if not header_reconciles:
+            errors.append("合计金额+合计税额必须等于价税合计")
     elif total is None:
         warnings.append("未识别到价税合计，无法完成勾稽")
 
@@ -195,11 +212,11 @@ def validate_invoice(data: dict) -> dict:
     line_tax = _sum_lines(data, "CommodityTax")
     line_amount_ok = (
         None if line_amount is None or amount is None
-        else abs(line_amount - amount) <= tolerance
+        else abs(line_amount - amount) <= detail_tolerance
     )
     line_tax_ok = (
         None if line_tax is None or tax is None
-        else abs(line_tax - tax) <= tolerance
+        else abs(line_tax - tax) <= detail_tolerance
     )
     observed_detail_issues: list[str] = []
     if line_amount is not None and amount is not None:
@@ -212,7 +229,7 @@ def validate_invoice(data: dict) -> dict:
             observed_detail_issues.append(
                 "明细OCR提取可能不完整：税额汇总与票头合计不一致"
             )
-    observed_detail_issues.extend(_validate_line_tax(data, tolerance))
+    observed_detail_issues.extend(_validate_line_tax(data, detail_tolerance))
 
     detail_lists_present = any(
         _line_values(data, key)
@@ -252,7 +269,7 @@ def validate_invoice(data: dict) -> dict:
         words_total = parse_chinese_amount(amount_words)
         if words_total is None:
             warnings.append("价税合计大写金额无法解析")
-        elif abs(words_total - abs(total)) > tolerance:
+        elif words_total != abs(total):
             errors.append("价税合计大写与小写金额不一致")
 
     for key, label in (
@@ -290,10 +307,7 @@ def validate_invoice(data: dict) -> dict:
         "authenticity_checked": False,
         "checks": {
             "header_reconciliation": (
-                total is not None
-                and amount is not None
-                and tax is not None
-                and abs((amount + tax) - total) <= tolerance
+                header_reconciles
             ),
             "line_amount_reconciliation": (
                 line_amount_ok
@@ -305,7 +319,7 @@ def validate_invoice(data: dict) -> dict:
                 None if not amount_words or total is None
                 else (
                     parse_chinese_amount(amount_words) is not None
-                    and abs(parse_chinese_amount(amount_words) - abs(total)) <= tolerance
+                    and parse_chinese_amount(amount_words) == abs(total)
                 )
             ),
             "detail_reconciliation": {
@@ -376,4 +390,14 @@ def manual_approval_blockers(data: dict) -> list[str]:
     ):
         if field(data, key).strip() and _decimal(field(data, key)) is None:
             blockers.append(f"{label}不是有效数字")
+    amount = _decimal(field(data, "TotalAmount"))
+    tax = _decimal(field(data, "TotalTax"))
+    total = _decimal(field(data, "AmountInFiguers"))
+    if (
+        amount is not None
+        and tax is not None
+        and total is not None
+        and not _header_reconciles(amount, tax, total)
+    ):
+        blockers.append("合计金额+合计税额必须等于价税合计")
     return blockers
